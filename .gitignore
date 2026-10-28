@@ -1,0 +1,8 @@
+/dist/
+/tests/*.exe
+*.pdb
+*.user
+*.suo
+*.csv
+*.log
+

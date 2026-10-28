@@ -1,0 +1,22 @@
+name: Windows build and diagnostics tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build portable application
+        shell: pwsh
+        run: .\build.ps1
+      - name: Run diagnostic self-tests
+        shell: pwsh
+        run: .\tests\run-self-tests.ps1
+      - name: Upload portable executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: NetworkMonitor-windows
+          path: dist/NetworkMonitor.exe
+
