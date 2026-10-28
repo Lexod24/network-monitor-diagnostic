@@ -56,7 +56,7 @@ namespace NetworkMonitorApp
                 case "GridInternet": return "Internet";
                 case "GridDNS": return "DNS";
                 case "DiagnosisGroup": return ro ? "Diagnostic - constatari, dovezi si limite" : "Diagnosis - findings, evidence, and limits";
-                case "ReportTitle": return ro ? "DIAGNOSTIC LOCAL - Reguli transparente, fara AI" : "LOCAL DIAGNOSIS - Transparent rules, no AI";
+                case "ReportTitle": return ro ? "DIAGNOSTIC LOCAL - Reguli transparente" : "LOCAL DIAGNOSIS - Transparent rules";
                 case "ReportTitleAI": return ro ? "DIAGNOSTIC CU EXPLICATIE AI - Dovezile sunt masurate local" : "AI-EXPLAINED DIAGNOSIS - Evidence measured locally";
                 case "Interval": return ro ? "Interval" : "Time span";
                 case "SampleCount": return ro ? "Esantioane" : "Samples";
@@ -67,6 +67,14 @@ namespace NetworkMonitorApp
                 case "NoAnomalies": return ro ? "Nu s-au detectat intreruperi sau anomalii peste pragurile definite in perioada masurata. Asta nu exclude probleme din afara intervalului inregistrat." : "No interruptions or anomalies above the defined thresholds were detected during this session. This does not rule out problems outside the recorded period.";
                 case "Limitations": return ro ? "Limite: ping-ul poate fi filtrat. Wi-Fi-ul poate lipsi daca Windows nu expune informatia. O singura destinatie nereusita nu confirma o cadere generala; comparatia mai multor endpointuri reduce, dar nu elimina, ambiguitatea. Jurnalul nu poate dovedi singur defecte hardware sau vina furnizorului." : "Limits: ping may be filtered. Wi-Fi details may be unavailable if Windows does not expose them. One failed destination does not prove a general outage; comparing multiple endpoints reduces, but does not remove, ambiguity. The log alone cannot prove hardware failure or ISP fault.";
                 case "AIDataNotice": return ro ? "La analiza AI se trimite doar un sumar agregat al masuratorilor, dupa autentificarea si acordul tau ChatGPT. CSV-ul brut, SSID-ul si adresele IP nu sunt trimise." : "AI analysis sends only an aggregated measurement summary after you sign in and approve ChatGPT usage. The raw CSV, SSID, and IP addresses are not sent.";
+                case "AIConsentTitle": return "Continue with ChatGPT";
+                case "AIConsentPrompt": return ro ? "Pentru explicatia AI, aplicatia trimite un sumar agregat al masuratorilor la ChatGPT dupa autentificarea si acordul tau. CSV-ul brut, SSID-ul si IP-urile nu sunt trimise. Cererea foloseste limitele planului ChatGPT al contului tau. Continui?" : "For the AI explanation, the app sends an aggregated measurement summary to ChatGPT after you sign in and consent. The raw CSV, Wi-Fi name, and IP addresses are not sent. The request uses your ChatGPT account's plan limits. Continue?";
+                case "AIConnectedStatus": return ro ? "ChatGPT conectat" : "ChatGPT connected";
+                case "AINotConnectedStatus": return ro ? "ChatGPT neconectat - raport local disponibil" : "ChatGPT not connected - local report available";
+                case "AIAnalyzingStatus": return ro ? "ChatGPT analizeaza sumarul masuratorilor..." : "ChatGPT is analyzing the measurement summary...";
+                case "AIFailedPrefix": return ro ? "Explicatia AI nu a putut fi obtinuta; raportul local ramane disponibil. Detalii: " : "AI explanation was unavailable; the local report is still available. Details: ";
+                case "AIExplanationHeader": return ro ? "EXPLICATIE AI CHATGPT - interpretare suplimentara" : "CHATGPT AI EXPLANATION - supplementary interpretation";
+                case "AIRevocationNote": return ro ? "Deconectat local. Revocarea la distanta nu a putut fi confirmata; poti revoca accesul in setarile ChatGPT." : "Signed out locally. Remote revocation could not be confirmed; you can revoke access in ChatGPT settings.";
                 case "ProbeError": return ro ? "Monitorul a intampinat o eroare la colectarea acestei probe." : "The monitor encountered an error while collecting this sample.";
                 default: return key;
             }

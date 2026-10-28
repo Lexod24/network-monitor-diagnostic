@@ -8,8 +8,10 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Web.Script.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -500,7 +502,7 @@ namespace NetworkMonitorApp
                 .Select(delegate(Sample s) { return s.InternetLatencyMs.Value; }));
 
             StringBuilder report = new StringBuilder();
-            report.AppendLine("DIAGNOSTIC LOCAL - bazat pe reguli, fara transmiterea datelor catre AI");
+            report.AppendLine("DIAGNOSTIC LOCAL - bazat pe reguli transparente; sumarul poate primi explicatie AI separat");
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Interval: {0} - {1}",
                 samples[0].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture),
                 samples[samples.Count - 1].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)));
@@ -654,6 +656,8 @@ namespace NetworkMonitorApp
         private readonly Button startStopButton;
         private readonly Button openLogsButton;
         private readonly Button copyReportButton;
+        private readonly Button aiButton;
+        private readonly Button disconnectAiButton;
         private readonly Label statusLabel;
         private readonly Label wifiLabel;
         private readonly Label signalLabel;
@@ -665,6 +669,7 @@ namespace NetworkMonitorApp
         private readonly ComboBox languageSelector;
         private readonly Label headingLabel;
         private readonly Label footerLabel;
+        private readonly Label aiStatusLabel;
         private readonly GroupBox diagnosisGroup;
         private AppLanguage language = AppLanguage.English;
         private readonly object samplesGate = new object();
@@ -709,6 +714,22 @@ namespace NetworkMonitorApp
             languageSelector.SelectedIndexChanged += LanguageChanged;
             header.Controls.Add(languageSelector);
 
+            aiButton = new Button();
+            aiButton.Text = Localization.Get(language, "ContinueChatGPT");
+            aiButton.Size = new Size(190, 32);
+            aiButton.Location = new Point(590, 58);
+            aiButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            aiButton.Click += AiButtonClicked;
+            header.Controls.Add(aiButton);
+
+            disconnectAiButton = new Button();
+            disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
+            disconnectAiButton.Size = new Size(130, 32);
+            disconnectAiButton.Location = new Point(790, 58);
+            disconnectAiButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            disconnectAiButton.Click += DisconnectAiClicked;
+            header.Controls.Add(disconnectAiButton);
+
             startStopButton = new Button();
             startStopButton.Text = Localization.Get(language, "Start");
             startStopButton.Size = new Size(190, 36);
@@ -721,10 +742,22 @@ namespace NetworkMonitorApp
 
             statusLabel = new Label();
             statusLabel.Text = Localization.Get(language, "Stopped");
-            statusLabel.AutoSize = true;
+            statusLabel.AutoSize = false;
+            statusLabel.Size = new Size(150, 22);
             statusLabel.Location = new Point(230, 66);
             statusLabel.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
+            statusLabel.AutoEllipsis = true;
             header.Controls.Add(statusLabel);
+
+            aiStatusLabel = new Label();
+            aiStatusLabel.Text = Localization.Get(language, ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
+            aiStatusLabel.AutoSize = false;
+            aiStatusLabel.Size = new Size(185, 22);
+            aiStatusLabel.Location = new Point(390, 68);
+            aiStatusLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            aiStatusLabel.Font = new Font("Segoe UI", 8F);
+            aiStatusLabel.AutoEllipsis = true;
+            header.Controls.Add(aiStatusLabel);
 
             openLogsButton = new Button();
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
@@ -798,7 +831,7 @@ namespace NetworkMonitorApp
             diagnosisBox.ScrollBars = ScrollBars.Vertical;
             diagnosisBox.Dock = DockStyle.Fill;
             diagnosisBox.Font = new Font("Consolas", 9F);
-            diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis");
+            diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Localization.Get(language, "AIDataNotice");
             diagnosisGroup.Controls.Add(diagnosisBox);
 
             footerLabel = new Label();
@@ -827,6 +860,11 @@ namespace NetworkMonitorApp
             startStopButton.Text = Localization.Get(language, monitoring ? "Stop" : (samples.Count > 0 ? "Restart" : "Start"));
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
             copyReportButton.Text = Localization.Get(language, "CopyReport");
+            aiButton.Text = Localization.Get(language, "ContinueChatGPT");
+            disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
+            bool aiConnected = ChatGptPlanClient.IsConnected;
+            aiStatusLabel.Text = Localization.Get(language, aiConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
+            disconnectAiButton.Enabled = aiConnected;
             statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
             wifiLabel.Text = Localization.Get(language, "MetricWifi") + ": " + Localization.Get(language, "NoValue");
             signalLabel.Text = Localization.Get(language, "MetricSignal") + ": " + Localization.Get(language, "NoValue");
@@ -843,7 +881,7 @@ namespace NetworkMonitorApp
             grid.Columns[5].HeaderText = Localization.Get(language, "GridDNS");
             grid.Columns[6].HeaderText = Localization.Get(language, "State");
             grid.Columns[7].HeaderText = Localization.Get(language, "Events");
-            if (samples.Count == 0) diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis");
+            if (samples.Count == 0) diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Localization.Get(language, "AIDataNotice");
             else if (!monitoring)
             {
                 List<Sample> copy;
@@ -871,6 +909,50 @@ namespace NetworkMonitorApp
                 StopMonitoring();
         }
 
+        private void AiButtonClicked(object sender, EventArgs e)
+        {
+            DialogResult consent = MessageBox.Show(this, Localization.Get(language, "AIConsentPrompt"),
+                Localization.Get(language, "AIConsentTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (consent != DialogResult.Yes) return;
+            aiButton.Enabled = false;
+            disconnectAiButton.Enabled = false;
+            aiStatusLabel.Text = Localization.Get(language, "AISigningIn");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string message = null;
+                bool success = false;
+                try { message = ChatGptPlanClient.Connect(); success = true; }
+                catch (Exception exception) { message = exception.Message; }
+                SafeBeginInvoke(delegate
+                {
+                    aiButton.Enabled = true;
+                    disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
+                    aiStatusLabel.Text = Localization.Get(language, ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
+                    if (success) MessageBox.Show(this, message, Localization.Get(language, "AIConnectedStatus"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    else MessageBox.Show(this, message, Localization.Get(language, "AIUnavailable"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                });
+            });
+        }
+
+        private void DisconnectAiClicked(object sender, EventArgs e)
+        {
+            aiButton.Enabled = false;
+            disconnectAiButton.Enabled = false;
+            aiStatusLabel.Text = Localization.Get(language, "Stopping");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string message;
+                try { message = ChatGptPlanClient.Disconnect(); }
+                catch { message = Localization.Get(language, "AIRevocationNote"); }
+                SafeBeginInvoke(delegate
+                {
+                    aiButton.Enabled = true;
+                    aiStatusLabel.Text = Localization.Get(language, "AINotConnectedStatus");
+                    MessageBox.Show(this, message, Localization.Get(language, "DisconnectChatGPT"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                });
+            });
+        }
+
         private void StartMonitoring()
         {
             lock (samplesGate) samples.Clear();
@@ -893,7 +975,7 @@ namespace NetworkMonitorApp
                 timer = null;
             }
             startStopButton.Enabled = false;
-            statusLabel.Text = "Oprire si analiza...";
+            statusLabel.Text = Localization.Get(language, "Stopping");
 
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -908,6 +990,22 @@ namespace NetworkMonitorApp
                 lock (samplesGate) copy = new List<Sample>(samples);
                 AppLanguage reportLanguage = language;
                 string report = DiagnosticEngine.Analyze(copy, reportLanguage);
+                bool explainWithAi = ChatGptPlanClient.IsConnected;
+                if (explainWithAi)
+                {
+                    SafeBeginInvoke(delegate { aiStatusLabel.Text = Localization.Get(reportLanguage, "AIAnalyzingStatus"); });
+                    try
+                    {
+                        string explanation = ChatGptPlanClient.Explain(copy, reportLanguage);
+                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIExplanationHeader") + Environment.NewLine + explanation;
+                    }
+                    catch (Exception exception)
+                    {
+                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIFailedPrefix") + exception.Message;
+                    }
+                }
+                else
+                    report += Environment.NewLine + Localization.Get(reportLanguage, "AIDataNotice");
                 try { CsvLogger.WriteReport(report); } catch { }
 
                 SafeBeginInvoke(delegate
@@ -917,6 +1015,7 @@ namespace NetworkMonitorApp
                     startStopButton.Text = Localization.Get(language, "Restart");
                     startStopButton.BackColor = Color.FromArgb(23, 112, 214);
                     startStopButton.Enabled = true;
+                    aiStatusLabel.Text = Localization.Get(language, ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
                 });
             });
         }
@@ -1058,6 +1157,17 @@ namespace NetworkMonitorApp
             Test(results, "gateway latency spike", WindowWith(delegate(Sample s) { s.GatewayLatencyMs = 180; }), "Latența locala");
             bool englishReport = DiagnosticEngine.Analyze(HealthyWindow(), AppLanguage.English).IndexOf("NETWORK SESSION DIAGNOSIS", StringComparison.Ordinal) >= 0;
             results.Add((englishReport ? "PASS" : "FAIL") + " | English report | " + (englishReport ? "default report language available" : "English report missing"));
+            bool pkce = ChatGptPlanClient.CreateCodeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+            results.Add((pkce ? "PASS" : "FAIL") + " | PKCE S256 | " + (pkce ? "RFC challenge vector matches" : "challenge mismatch"));
+            TestOidc(results);
+            string summary = ChatGptPlanClient.BuildAggregatedSummary(HealthyWindow(), AppLanguage.English);
+            bool sanitized = summary.IndexOf("192.0.2.45", StringComparison.Ordinal) < 0 && summary.IndexOf("MyPrivateWifi", StringComparison.Ordinal) < 0;
+            results.Add((sanitized ? "PASS" : "FAIL") + " | AI summary privacy | " + (sanitized ? "no raw network identifiers" : "raw identifier present"));
+            Dictionary<string, object> aiPayload = ChatGptPlanClient.CreateResponsesPayload("test-model",
+                new Dictionary<string, object> { { "role", "developer" }, { "content", "instructions" } },
+                new Dictionary<string, object> { { "role", "user" }, { "content", summary } });
+            bool noStoreStreaming = aiPayload.ContainsKey("store") && aiPayload["store"].Equals(false) && aiPayload.ContainsKey("stream") && aiPayload["stream"].Equals(true);
+            results.Add((noStoreStreaming ? "PASS" : "FAIL") + " | Responses privacy flags | " + (noStoreStreaming ? "store=false and stream=true" : "required request flags missing"));
 
             string text = String.Join(Environment.NewLine, results.ToArray());
             if (!String.IsNullOrWhiteSpace(outputPath))
@@ -1073,6 +1183,61 @@ namespace NetworkMonitorApp
             string report = DiagnosticEngine.Analyze(samples);
             bool passed = report.IndexOf(expectedText, StringComparison.OrdinalIgnoreCase) >= 0;
             results.Add((passed ? "PASS" : "FAIL") + " | " + name + " | " + (passed ? "expected finding present" : "expected finding missing"));
+        }
+
+        private static void TestOidc(List<string> results)
+        {
+            string jwt, jwks;
+            CreateTestJwt(out jwt, out jwks, "test-client", "test-nonce", DateTime.UtcNow.AddMinutes(5));
+            bool valid = true;
+            string validationError = "";
+            try { OidcTokenValidator.Validate(jwt, jwks, "test-client", "test-nonce", DateTime.UtcNow); }
+            catch (Exception exception) { valid = false; validationError = exception.Message; }
+            results.Add((valid ? "PASS" : "FAIL") + " | OIDC token signature and claims | " + (valid ? "valid synthetic token accepted" : "valid token rejected: " + validationError));
+            bool badNonceRejected = false;
+            try { OidcTokenValidator.Validate(jwt, jwks, "test-client", "wrong-nonce", DateTime.UtcNow); }
+            catch { badNonceRejected = true; }
+            results.Add((badNonceRejected ? "PASS" : "FAIL") + " | OIDC nonce validation | " + (badNonceRejected ? "mismatched nonce rejected" : "mismatched nonce accepted"));
+            bool badAudienceRejected = false;
+            try { OidcTokenValidator.Validate(jwt, jwks, "other-client", "test-nonce", DateTime.UtcNow); }
+            catch { badAudienceRejected = true; }
+            results.Add((badAudienceRejected ? "PASS" : "FAIL") + " | OIDC audience validation | " + (badAudienceRejected ? "wrong audience rejected" : "wrong audience accepted"));
+            string expired, expiredJwks;
+            CreateTestJwt(out expired, out expiredJwks, "test-client", "test-nonce", DateTime.UtcNow.AddMinutes(-5));
+            bool expiredRejected = false;
+            try { OidcTokenValidator.Validate(expired, expiredJwks, "test-client", "test-nonce", DateTime.UtcNow); }
+            catch { expiredRejected = true; }
+            results.Add((expiredRejected ? "PASS" : "FAIL") + " | OIDC expiry validation | " + (expiredRejected ? "expired token rejected" : "expired token accepted"));
+        }
+
+        private static void CreateTestJwt(out string jwt, out string jwks, string audience, string nonce, DateTime expires)
+        {
+            using (RSACryptoServiceProvider rsa = new RSACryptoServiceProvider(2048))
+            using (SHA256 sha = SHA256.Create())
+            {
+                RSAParameters key = rsa.ExportParameters(false);
+                JavaScriptSerializer serializer = new JavaScriptSerializer();
+                Dictionary<string, object> header = new Dictionary<string, object> { { "alg", "RS256" }, { "kid", "test-key" } };
+                Dictionary<string, object> claims = new Dictionary<string, object>
+                {
+                    { "iss", "https://auth.openai.com" }, { "aud", audience },
+                    { "exp", new DateTimeOffset(expires).ToUnixTimeSeconds() }, { "nonce", nonce }, { "sub", "synthetic-user" }
+                };
+                string first = Base64UrlTest(Encoding.UTF8.GetBytes(serializer.Serialize(header)));
+                string second = Base64UrlTest(Encoding.UTF8.GetBytes(serializer.Serialize(claims)));
+                string signed = first + "." + second;
+                jwt = signed + "." + Base64UrlTest(rsa.SignData(Encoding.ASCII.GetBytes(signed), sha));
+                Dictionary<string, object> jwk = new Dictionary<string, object>
+                {
+                    { "kid", "test-key" }, { "kty", "RSA" }, { "n", Base64UrlTest(key.Modulus) }, { "e", Base64UrlTest(key.Exponent) }
+                };
+                jwks = serializer.Serialize(new Dictionary<string, object> { { "keys", new object[] { jwk } } });
+            }
+        }
+
+        private static string Base64UrlTest(byte[] bytes)
+        {
+            return Convert.ToBase64String(bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_');
         }
 
         private static IList<Sample> HealthyWindow()
