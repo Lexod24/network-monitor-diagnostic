@@ -2683,6 +2683,7 @@ namespace NetworkMonitorApp
         private readonly GlassButton openLogsButton;
         private readonly GlassButton copyReportButton;
         private readonly GlassButton routeTraceButton;
+        private readonly GlassButton loadLatencyButton;
         private readonly GlassButton aiButton;
         private readonly GlassButton disconnectAiButton;
         private readonly GlassButton aiSettingsButton;
@@ -2745,6 +2746,8 @@ namespace NetworkMonitorApp
         private bool aiDisconnectInProgress;
         private bool aiAnalysisInProgress;
         private bool routeTraceInProgress;
+        private bool loadLatencyInProgress;
+        private readonly List<LoadLatencySessionMarker> loadLatencyMarkers = new List<LoadLatencySessionMarker>();
         private string reportAiExplanation;
         private string reportAiProvider;
         private bool reportAiAttempted;
@@ -2785,6 +2788,9 @@ namespace NetworkMonitorApp
             routeTraceButton = CreateToolbarButton(Localization.Get(language, "RouteTraceButton"), 132);
             routeTraceButton.Click += RouteTraceClicked;
             tools.Controls.Add(routeTraceButton);
+            loadLatencyButton = CreateToolbarButton(Localization.Get(language, "LoadButton"), 156);
+            loadLatencyButton.Click += LoadLatencyClicked;
+            tools.Controls.Add(loadLatencyButton);
             openLogsButton = CreateToolbarButton(Localization.Get(language, "OpenLogs"), 118);
             openLogsButton.Click += OpenLogsClicked;
             tools.Controls.Add(openLogsButton);
@@ -3030,6 +3036,8 @@ namespace NetworkMonitorApp
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
             copyReportButton.Text = Localization.Get(language, "CopyReport");
             routeTraceButton.Text = Localization.Get(language, "RouteTraceButton");
+            loadLatencyButton.Text = Localization.Get(language, "LoadButton");
+            loadLatencyButton.Enabled = !loadLatencyInProgress && !reportPreparing && !updateInstallStarted;
             aiButton.Text = Localization.Get(language, "ContinueChatGPT");
             aiSettingsButton.Text = Localization.Get(language, "AISettings");
             disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
@@ -3163,6 +3171,10 @@ namespace NetworkMonitorApp
                 }
             }
             else report += Environment.NewLine + Localization.Get(language, "AIDataNotice");
+            List<LoadLatencySessionMarker> markers;
+            lock (samplesGate) markers = new List<LoadLatencySessionMarker>(loadLatencyMarkers);
+            string loadTimeline = LoadLatencyTestPolicy.FormatTimeline(markers, language);
+            if (!String.IsNullOrEmpty(loadTimeline)) report += Environment.NewLine + Environment.NewLine + loadTimeline;
             return report;
         }
 
@@ -3264,6 +3276,7 @@ namespace NetworkMonitorApp
 
         private void StartStopClicked(object sender, EventArgs e)
         {
+            if (loadLatencyInProgress) return;
             long now = Stopwatch.GetTimestamp();
             if (!MonitoringSessionPolicy.ShouldAcceptToggle(lastStartStopActionTicks, now, Stopwatch.Frequency, SystemInformation.DoubleClickTime)) return;
             lastStartStopActionTicks = now;
@@ -3271,6 +3284,91 @@ namespace NetworkMonitorApp
                 StartMonitoring();
             else if (MonitoringSessionPolicy.CanStop(monitoring, !awaitingInitialSample))
                 StopMonitoring();
+        }
+
+        private async void LoadLatencyClicked(object sender, EventArgs e)
+        {
+            if (loadLatencyInProgress || reportPreparing || updateInstallStarted) return;
+            if (MessageBox.Show(this, LoadLatencyTestPolicy.GetConfirmation(language), Localization.Get(language, "LoadTitle"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+
+            loadLatencyInProgress = true;
+            loadLatencyButton.Enabled = false;
+            startStopButton.Enabled = false;
+            copyReportButton.Enabled = false;
+            routeTraceButton.Enabled = false;
+            openLogsButton.Enabled = false;
+            aiButton.Enabled = false;
+            aiSettingsButton.Enabled = false;
+            disconnectAiButton.Enabled = false;
+            languageSelector.Enabled = false;
+            monitorViewButton.Enabled = false;
+            reportViewButton.Enabled = false;
+            speedTestViewButton.Enabled = false;
+            bool resumeMonitoring = monitoring && timer != null;
+            bool sessionMarkerStarted = false;
+            string outcome = "unavailable";
+            if (resumeMonitoring) timer.Change(Timeout.Infinite, Timeout.Infinite);
+            try
+            {
+                if (resumeMonitoring)
+                {
+                    statusLabel.Text = Localization.Get(language, "LoadPreparing");
+                    int wait = 0;
+                    while (Interlocked.CompareExchange(ref sampling, 0, 0) != 0 && wait < 30000)
+                    {
+                        await Task.Delay(100);
+                        wait += 100;
+                    }
+                    if (Interlocked.CompareExchange(ref sampling, 0, 0) != 0)
+                        throw new TimeoutException();
+                    if (IsDisposed) return;
+                    lock (samplesGate) loadLatencyMarkers.Add(new LoadLatencySessionMarker { Timestamp = DateTimeOffset.Now, Kind = "start", Outcome = "running" });
+                    sessionMarkerStarted = true;
+                }
+
+                using (LoadLatencyTestDialog dialog = new LoadLatencyTestDialog(language))
+                {
+                    dialog.ShowDialog(this);
+                    if (dialog.Result != null) outcome = dialog.Result.Outcome;
+                }
+            }
+            catch (TimeoutException)
+            {
+                outcome = "not-started";
+                MessageBox.Show(this, Localization.Get(language, "LoadProbeBusy"), Localization.Get(language, "LoadTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch
+            {
+                outcome = "unavailable";
+                MessageBox.Show(this, Localization.Get(language, "LoadRuntimeUnavailable"), Localization.Get(language, "LoadTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                if (resumeMonitoring && sessionMarkerStarted)
+                {
+                    lock (samplesGate) loadLatencyMarkers.Add(new LoadLatencySessionMarker { Timestamp = DateTimeOffset.Now, Kind = "end", Outcome = outcome });
+                }
+                if (resumeMonitoring && monitoring && timer != null) timer.Change(5000, 5000);
+                loadLatencyInProgress = false;
+                if (!IsDisposed)
+                {
+                    ApplyLanguage();
+                    if (!monitoring) startStopButton.Enabled = !reportPreparing && !updateInstallStarted;
+                    copyReportButton.Enabled = reportReady;
+                    routeTraceButton.Enabled = !routeTraceInProgress;
+                    loadLatencyButton.Enabled = !reportPreparing && !updateInstallStarted;
+                    openLogsButton.Enabled = true;
+                    aiSettingsButton.Enabled = true;
+                    aiButton.Enabled = !aiSignInInProgress && !aiDisconnectInProgress;
+                    disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected && !aiSignInInProgress && !aiDisconnectInProgress;
+                    languageSelector.Enabled = true;
+                    monitorViewButton.Enabled = true;
+                    reportViewButton.Enabled = true;
+                    speedTestViewButton.Enabled = true;
+                    if (monitoring) statusLabel.Text = Localization.Get(language, "Running");
+                }
+            }
         }
 
         private void AiButtonClicked(object sender, EventArgs e)
@@ -3343,7 +3441,7 @@ namespace NetworkMonitorApp
             DialogResult eventConsent = MessageBox.Show(this, Localization.Get(language, "CollectWindowsEventsPrompt"),
                 Localization.Get(language, "AppTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             bool collectWindowsEvents = eventConsent == DialogResult.Yes;
-            lock (samplesGate) samples.Clear();
+            lock (samplesGate) { samples.Clear(); loadLatencyMarkers.Clear(); }
             reportPreparing = false;
             reportReady = false;
             reportAiAttempted = false;
@@ -3971,6 +4069,48 @@ namespace NetworkMonitorApp
                 NativeWifiReader.PhyName(10) == "802.11ax / HE" && NativeWifiReader.PhyName(11) == "802.11be / EHT" &&
                 NativeWifiReader.PhyName(999) == null;
             results.Add((nativeWifiRules ? "PASS" : "FAIL") + " | native Wi-Fi frequency and PHY interpretation | " + (nativeWifiRules ? "band uses native frequency, not an ambiguous channel; unknown values stay unavailable" : "native frequency/PHY mapping mismatch"));
+            LoadLatencyRequestBudget loadBudget = new LoadLatencyRequestBudget();
+            Uri downloadRequest = new Uri(LoadLatencyTestPolicy.Origin + "/__down?bytes=" + LoadLatencyTestPolicy.DownloadBytesPerRequest.ToString(CultureInfo.InvariantCulture));
+            bool boundedDownload = LoadLatencyTestPolicy.TryReserve(downloadRequest, "GET", 0, loadBudget) &&
+                LoadLatencyTestPolicy.TryReserve(downloadRequest, "GET", 0, loadBudget) &&
+                !LoadLatencyTestPolicy.TryReserve(downloadRequest, "GET", 0, loadBudget);
+            Uri uploadRequest = new Uri(LoadLatencyTestPolicy.Origin + "/__up?bytes=" + LoadLatencyTestPolicy.UploadBytesPerRequest.ToString(CultureInfo.InvariantCulture));
+            bool boundedUpload = LoadLatencyTestPolicy.TryReserve(uploadRequest, "POST", LoadLatencyTestPolicy.UploadBytesPerRequest, loadBudget) &&
+                LoadLatencyTestPolicy.TryReserve(uploadRequest, "POST", LoadLatencyTestPolicy.UploadBytesPerRequest, loadBudget) &&
+                !LoadLatencyTestPolicy.TryReserve(uploadRequest, "POST", LoadLatencyTestPolicy.UploadBytesPerRequest, loadBudget);
+            bool loadTargetGuard = !LoadLatencyTestPolicy.TryReserve(new Uri("https://example.com/__down?bytes=8388608"), "GET", 0, new LoadLatencyRequestBudget()) &&
+                !LoadLatencyTestPolicy.TryReserve(new Uri(LoadLatencyTestPolicy.Origin + "/__results?bytes=0"), "GET", 0, new LoadLatencyRequestBudget()) &&
+                !LoadLatencyTestPolicy.TryReserve(downloadRequest, "POST", 0, new LoadLatencyRequestBudget()) &&
+                !LoadLatencyTestPolicy.TryReserve(uploadRequest, "POST", 1, new LoadLatencyRequestBudget()) &&
+                loadBudget.PayloadBytes == LoadLatencyTestPolicy.MaximumPayloadBytes;
+            LoadLatencyRequestBudget zeroBudget = new LoadLatencyRequestBudget();
+            bool boundedZeroRequests = true;
+            for (int i = 0; i < LoadLatencyTestPolicy.MaximumZeroByteRequests; i++)
+                boundedZeroRequests = boundedZeroRequests && LoadLatencyTestPolicy.TryReserve(new Uri(LoadLatencyTestPolicy.Origin + "/__down?bytes=0"), "GET", 0, zeroBudget);
+            boundedZeroRequests = boundedZeroRequests && !LoadLatencyTestPolicy.TryReserve(new Uri(LoadLatencyTestPolicy.Origin + "/__down?bytes=0"), "GET", 0, zeroBudget);
+            bool loadBudgetRules = boundedDownload && boundedUpload && loadTargetGuard && boundedZeroRequests &&
+                LoadLatencyTestPolicy.MaximumPayloadBytes == 24 * 1024 * 1024 && LoadLatencyTestPolicy.MaximumDurationSeconds == 60;
+            results.Add((loadBudgetRules ? "PASS" : "FAIL") + " | loaded-latency destination and traffic budget | " + (loadBudgetRules ? "only documented Cloudflare endpoints, fixed transfer sizes/counts, 24 MiB payload and zero-byte probes capped" : "loaded-latency request policy did not enforce its bounds"));
+            string loadModule = LoadLatencyTestPolicy.BuildModule(AppLanguage.English);
+            string loadModuleRo = LoadLatencyTestPolicy.BuildModule(AppLanguage.Romanian);
+            bool loadPrivacy = loadModule.Contains("logAimApiUrl:null") && loadModule.Contains("logMeasurementApiUrl:null") &&
+                loadModule.Contains("connect-src https://speed.cloudflare.com") && loadModule.Contains("redirect:'error'") &&
+                loadModule.Contains("measurements:[{type:'latency',numPackets:10}") &&
+                loadModule.Contains("event.data==='cancel'") && loadModule.Contains("engine.pause()") && loadModule.Contains("policy.durationSeconds*1000") &&
+                loadModule.Contains("bandwidthAbortRequestDuration:policy.requestAbortMs") && loadModule.Contains("engine.onError=") && loadModule.Contains("send('progress'") &&
+                LoadLatencyTestPolicy.GetConfirmation(AppLanguage.English).Contains("No account, API key, or payment") &&
+                LoadLatencyTestPolicy.GetConfirmation(AppLanguage.Romanian).Contains("Nu cere cont, cheie API sau plată") &&
+                loadModuleRo.Contains("rezultatele nu sunt păstrate de aplicație") && !loadModule.Contains("fetch('https://") &&
+                !loadModule.Contains("send('results')");
+            List<LoadLatencySessionMarker> loadMarkers = new List<LoadLatencySessionMarker>
+            {
+                new LoadLatencySessionMarker { Timestamp = DateTimeOffset.Parse("2026-01-02T03:04:05Z", CultureInfo.InvariantCulture), Kind = "start", Outcome = "running" },
+                new LoadLatencySessionMarker { Timestamp = DateTimeOffset.Parse("2026-01-02T03:05:05Z", CultureInfo.InvariantCulture), Kind = "end", Outcome = "cancelled" }
+            };
+            string loadTimeline = LoadLatencyTestPolicy.FormatTimeline(loadMarkers, AppLanguage.English);
+            bool loadTimelineSafe = loadTimeline.Contains("ordinary probes were paused") && loadTimeline.Contains("cancelled") &&
+                !loadTimeline.Contains("Mbps") && !loadTimeline.Contains("ms") && !loadTimeline.Contains("bytes");
+            results.Add((loadPrivacy && loadTimelineSafe ? "PASS" : "FAIL") + " | loaded-latency disclosure, no result upload, and report separation | " + (loadPrivacy && loadTimelineSafe ? "both languages disclose provider traffic and app payment/account requirements; report retains interval markers only" : "loaded-latency privacy/language/timeline regression"));
             Sample wifiPrivacySample = BaseSample();
             wifiPrivacySample.WifiSsid = "PrivateNetwork-DoNotExport";
             wifiPrivacySample.WifiBssid = "AA-BB-CC-DD-EE-FF";
@@ -4261,6 +4401,7 @@ namespace NetworkMonitorApp
                 Localization.Get(AppLanguage.Romanian, "MetricHeading") != Localization.Get(AppLanguage.English, "MetricHeading");
             results.Add((romanianUi ? "PASS" : "FAIL") + " | Romanian UI labels | " + (romanianUi ? "previously hardcoded controls now have Romanian labels" : "one or more Romanian labels are missing"));
             bool toolbarLabelsRomanian = Localization.Get(AppLanguage.Romanian, "RouteTraceButton") == "Testează ruta" &&
+                Localization.Get(AppLanguage.Romanian, "LoadButton") == "Latență sub sarcină" &&
                 Localization.Get(AppLanguage.Romanian, "OpenLogs") == "Deschide jurnalele" &&
                 Localization.Get(AppLanguage.Romanian, "CopyReport") == "Copiază diagnosticul" &&
                 Localization.Get(AppLanguage.Romanian, "AISettings") == "Setări AI" &&

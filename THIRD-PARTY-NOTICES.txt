@@ -9,3 +9,14 @@ package. The package license and additional notice are included in the source
 repository at vendor/WebView2/LICENSE.txt and vendor/WebView2/NOTICE.txt and in
 the portable ZIP alongside this notice. The WebView2 Runtime itself is not
 bundled and is supplied/serviced by Microsoft on the user's system.
+
+Cloudflare Speedtest SDK 1.14.1 (MIT License)
+Copyright (c) Cloudflare, Inc.
+Upstream: https://github.com/cloudflare/speedtest
+Embedded file SHA-256: 18ff2029827f755bae89d73edf118be8bc18b3c6d2d0b46873a7250585efd3b7
+
+The minified, unmodified browser SDK source is included at
+vendor/CloudflareSpeedtest-1.14.1.js and embedded into the application. Its MIT
+license is included at vendor/CloudflareSpeedtest-LICENSE.txt and in the
+portable ZIP. The app uses the public HTTPS measurement endpoints documented
+by Cloudflare and disables the SDK's separate results-summary upload endpoint.
