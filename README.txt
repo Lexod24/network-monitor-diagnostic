@@ -32,6 +32,9 @@ The final report suggests the first likely affected segment based on repeated ev
 The app draws a live latency graph for the latest 60 samples (about five minutes). The final diagnosis reports minimum, median, p95, maximum, and jitter from successful gateway, IPv4, and IPv6 probes. Missing samples break the jitter sequence.
 Passive upload/download rates are measured on the active route interface. Quiet (<0.25 Mbps) and active (>=1 Mbps) samples are compared only when there are at least three of each. This observes this PC's current traffic; it is not a controlled bufferbloat/speed test and generates no traffic. Other devices are not included.
 
+When Wi-Fi is the active route, the app also reads the current channel, band when the driver exposes it, radio type, and receive/transmit link rates from Windows. The app does not guess the band from the channel because 5/6 GHz channel numbers overlap. Link rates are not Internet speeds. A change in access point is detected in memory; the BSSID itself is never retained.
+During a monitoring session, the app may read WLAN AutoConfig, DNS Client, DHCP Client, and System event records if Windows exposes those logs to the current user. It stores only selected event categories and counts, not the event text, SSID, BSSID, adapter name, or addresses. Missing or inaccessible event logs do not stop monitoring. Event log evidence is a clue, not proof of cause.
+
 Optional Trace route: after confirmation, Windows sends a small number of ICMP TTL probes to an IPv4 or IPv6 target, up to eight hops, with a 12-second limit. Hop IPs appear in a dialog on this PC only. They are not saved or sent to AI. Some routers do not answer traceroute.
 CSV stores probe service names and statuses, IPv4/IPv6 measurements, proxy-use boolean, and portal suspicion boolean, but not target IP addresses, SSIDs, BSSIDs, adapter names, interface IDs, proxy address, or redirect URL. Logs rotate at 10 MB, keeping up to 10 rotated files.
 

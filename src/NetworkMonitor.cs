@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Diagnostics.Eventing.Reader;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
@@ -46,6 +47,11 @@ namespace NetworkMonitorApp
         public DateTimeOffset Timestamp;
         public string WifiState;
         public int? WifiSignalPercent;
+        public int? WifiChannel;
+        public string WifiBand;
+        public string WifiRadioType;
+        public double? WifiReceiveRateMbps;
+        public double? WifiTransmitRateMbps;
         public string GatewayPingStatus;
         public double? GatewayLatencyMs;
         public double? GatewayLossPct;
@@ -79,6 +85,221 @@ namespace NetworkMonitorApp
         public int? DnsAttempted;
         public string Connectivity;
         public string Events;
+    }
+
+    internal sealed class WifiTelemetry
+    {
+        public int? SignalPercent;
+        public int? Channel;
+        public string Band;
+        public string RadioType;
+        public double? ReceiveRateMbps;
+        public double? TransmitRateMbps;
+        public bool AccessPointChanged;
+    }
+
+    internal static class WifiTelemetryReader
+    {
+        private static readonly object Gate = new object();
+        private static string lastBssid;
+
+        internal static void BeginSession()
+        {
+            lock (Gate) lastBssid = null;
+        }
+
+        internal static WifiTelemetry Parse(string output)
+        {
+            return Parse(output, null);
+        }
+
+        internal static WifiTelemetry Parse(string output, string interfaceName)
+        {
+            WifiTelemetry result = new WifiTelemetry();
+            if (String.IsNullOrWhiteSpace(output)) return result;
+            output = SelectInterfaceBlock(output, interfaceName);
+            if (String.IsNullOrWhiteSpace(output)) return result;
+            Match match = Regex.Match(output, @"(?im)^\s*(?:Signal|Semnal)\s*:\s*(\d{1,3})\s*%");
+            int integer;
+            if (match.Success && Int32.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out integer) && integer <= 100)
+                result.SignalPercent = integer;
+            match = Regex.Match(output, @"(?im)^\s*(?:Channel|Canal)\s*:\s*(\d{1,3})\s*$");
+            if (match.Success && Int32.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out integer) && integer > 0 && integer <= 233)
+                result.Channel = integer;
+            match = Regex.Match(output, @"(?im)^\s*(?:Band|Banda)\s*:\s*(2\.4|5|6)\s*GHz\s*$");
+            if (match.Success) result.Band = match.Groups[1].Value + " GHz";
+            else
+            {
+                match = Regex.Match(output, @"(?im)^\s*(?:Frequency|Frecven(?:c|ț)ă)\s*:\s*(\d{4,5})\s*MHz\s*$");
+                double frequency;
+                if (match.Success && Double.TryParse(match.Groups[1].Value, NumberStyles.None, CultureInfo.InvariantCulture, out frequency))
+                    result.Band = frequency < 2500 ? "2.4 GHz" : (frequency < 5925 ? "5 GHz" : (frequency <= 7125 ? "6 GHz" : null));
+            }
+            match = Regex.Match(output, @"(?im)^\s*(?:Radio type|Tip radio|Tip de radio)\s*:\s*(.*?)\s*$");
+            if (match.Success && Regex.IsMatch(match.Groups[1].Value.Trim(), @"^802\.11[a-z0-9. -]{0,16}$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) result.RadioType = match.Groups[1].Value.Trim();
+            result.ReceiveRateMbps = ParseRate(output, @"(?:Receive rate|Rata de primire|Rata de recep(?:t|ț)ie)\s*\(Mbps\)");
+            result.TransmitRateMbps = ParseRate(output, @"(?:Transmit rate|Rata de transmitere|Rata de transmisie)\s*\(Mbps\)");
+            return result;
+        }
+
+        internal static WifiTelemetry Read(string interfaceName)
+        {
+            try
+            {
+                string netsh = Path.Combine(Environment.SystemDirectory, "netsh.exe");
+                if (!File.Exists(netsh)) return new WifiTelemetry();
+                ProcessStartInfo info = new ProcessStartInfo(netsh, "wlan show interfaces");
+                info.UseShellExecute = false;
+                info.CreateNoWindow = true;
+                info.RedirectStandardOutput = true;
+                info.RedirectStandardError = true;
+                using (Process process = Process.Start(info))
+                {
+                    if (!process.WaitForExit(1500)) { try { process.Kill(); } catch { } return new WifiTelemetry(); }
+                    string output = SelectInterfaceBlock(process.StandardOutput.ReadToEnd(), interfaceName);
+                    WifiTelemetry result = Parse(output);
+                    Match bssid = Regex.Match(output ?? "", @"(?im)^\s*BSSID\s*:\s*([0-9a-f]{2}(?:-[0-9a-f]{2}){5})\s*$");
+                    if (bssid.Success)
+                    {
+                        string current;
+                        using (SHA256 sha = SHA256.Create())
+                            current = Convert.ToBase64String(sha.ComputeHash(Encoding.ASCII.GetBytes(bssid.Groups[1].Value.ToUpperInvariant())));
+                        lock (Gate)
+                        {
+                            result.AccessPointChanged = !String.IsNullOrEmpty(lastBssid) && !String.Equals(lastBssid, current, StringComparison.Ordinal);
+                            lastBssid = current;
+                        }
+                    }
+                    else lock (Gate) { lastBssid = null; }
+                    return result;
+                }
+            }
+            catch { return new WifiTelemetry(); }
+        }
+
+        private static double? ParseRate(string output, string labelPattern)
+        {
+            Match match = Regex.Match(output, @"(?im)^\s*" + labelPattern + @"\s*:\s*(\d+(?:[.,]\d+)?)");
+            double value;
+            if (!match.Success || !Double.TryParse(match.Groups[1].Value.Replace(',', '.'), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out value) || value < 0 || value > 100000)
+                return null;
+            return value;
+        }
+
+        private static string SelectInterfaceBlock(string output, string interfaceName)
+        {
+            if (String.IsNullOrWhiteSpace(output)) return "";
+            MatchCollection names = Regex.Matches(output, @"(?im)^\s*(?:Name|Nume)\s*:\s*(.*?)\s*$");
+            if (names.Count == 0) return output;
+            if (!String.IsNullOrWhiteSpace(interfaceName))
+            {
+                for (int i = 0; i < names.Count; i++)
+                {
+                    int start = names[i].Index;
+                    int end = i + 1 < names.Count ? names[i + 1].Index : output.Length;
+                    if (String.Equals(names[i].Groups[1].Value.Trim(), interfaceName.Trim(), StringComparison.OrdinalIgnoreCase))
+                        return output.Substring(start, end - start);
+                }
+            }
+            if (names.Count == 1) return output.Substring(names[0].Index);
+            return "";
+        }
+    }
+
+    internal static class WindowsNetworkEvents
+    {
+        private static readonly object Gate = new object();
+        private static readonly HashSet<string> SeenRecords = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Queue<string> SeenOrder = new Queue<string>();
+        private static DateTimeOffset nextPoll = DateTimeOffset.MinValue;
+        private static DateTimeOffset sessionStarted = DateTimeOffset.MinValue;
+        private static bool readableThisSession;
+
+        internal static bool ReadableThisSession { get { lock (Gate) return readableThisSession; } }
+
+        internal static void BeginSession(DateTimeOffset start)
+        {
+            lock (Gate)
+            {
+                sessionStarted = start;
+                nextPoll = DateTimeOffset.MinValue;
+                readableThisSession = false;
+                SeenRecords.Clear();
+                SeenOrder.Clear();
+            }
+        }
+
+        internal static string Classify(string channel, string provider, int id, byte? level)
+        {
+            string source = (channel ?? "") + " " + (provider ?? "");
+            if (source.IndexOf("WLAN-AutoConfig", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (id == 8001) return "WindowsWifiConnected";
+                if (id == 8002) return "WindowsWifiConnectFailed";
+                if (id == 8003) return "WindowsWifiDisconnected";
+            }
+            if (source.IndexOf("DNS-Client", StringComparison.OrdinalIgnoreCase) >= 0 && id == 1014) return "WindowsDnsTimeout";
+            if (source.IndexOf("Dhcp-Client", StringComparison.OrdinalIgnoreCase) >= 0 && level.HasValue && (level.Value == 2 || level.Value == 3)) return "WindowsDhcpIssue";
+            if (source.IndexOf("Tcpip", StringComparison.OrdinalIgnoreCase) >= 0 && id == 4202) return "WindowsInterfaceDisconnected";
+            if (source.IndexOf("Tcpip", StringComparison.OrdinalIgnoreCase) >= 0 && id == 4201) return "WindowsInterfaceConnected";
+            return null;
+        }
+
+        internal static string Classify(string channel, string provider, int id)
+        {
+            return Classify(channel, provider, id, null);
+        }
+
+        internal static List<string> Capture(DateTimeOffset timestamp)
+        {
+            lock (Gate)
+            {
+                if (timestamp < nextPoll) return new List<string>();
+                nextPoll = timestamp.AddSeconds(15);
+            }
+            Dictionary<string, int> counts = new Dictionary<string, int>(StringComparer.Ordinal);
+            ReadChannel("Microsoft-Windows-WLAN-AutoConfig/Operational", counts);
+            ReadChannel("Microsoft-Windows-Dhcp-Client/Operational", counts);
+            ReadChannel("Microsoft-Windows-Dhcp-Client/Admin", counts);
+            ReadChannel("Microsoft-Windows-DNS-Client/Operational", counts);
+            ReadChannel("System", counts);
+            return counts.OrderBy(delegate(KeyValuePair<string, int> item) { return item.Key; })
+                .Select(delegate(KeyValuePair<string, int> item) { return item.Key + ":" + item.Value.ToString(CultureInfo.InvariantCulture); }).ToList();
+        }
+
+        private static void ReadChannel(string channel, Dictionary<string, int> counts)
+        {
+            try
+            {
+                string started = sessionStarted.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture);
+                string filter = "*[System[TimeCreated[@SystemTime >= '" + started + "']]]";
+                EventLogQuery query = new EventLogQuery(channel, PathType.LogName, filter) { ReverseDirection = true };
+                using (EventLogReader reader = new EventLogReader(query))
+                {
+                    lock (Gate) readableThisSession = true;
+                    for (int i = 0; i < 128; i++)
+                    {
+                        using (EventRecord record = reader.ReadEvent())
+                        {
+                            if (record == null) break;
+                            string category = Classify(channel, record.ProviderName, record.Id, record.Level);
+                            if (category == null || !record.RecordId.HasValue) continue;
+                            string key = channel + "|" + record.RecordId.Value.ToString(CultureInfo.InvariantCulture);
+                            bool fresh;
+                            lock (Gate)
+                            {
+                                fresh = SeenRecords.Add(key);
+                                if (fresh) { SeenOrder.Enqueue(key); while (SeenOrder.Count > 4096) SeenRecords.Remove(SeenOrder.Dequeue()); }
+                            }
+                            if (!fresh) continue;
+                            if (!counts.ContainsKey(category)) counts[category] = 0;
+                            counts[category]++;
+                        }
+                    }
+                }
+            }
+            catch { /* Event channels may be disabled or unreadable; monitoring continues without them. */ }
+        }
     }
 
     internal static class NetworkProbe
@@ -128,9 +349,10 @@ namespace NetworkMonitorApp
         public static Sample Capture(List<Sample> previousSamples, DateTimeOffset timestamp, bool checkDns)
         {
             int? signal;
+            WifiTelemetry wifiTelemetry;
             string gateway;
             string activeInterfaceType;
-            string wifiState = GetNetworkSnapshot(out signal, out gateway, out activeInterfaceType);
+            string wifiState = GetNetworkSnapshot(out signal, out wifiTelemetry, out gateway, out activeInterfaceType);
             long? bytesReceived;
             long? bytesSent;
             string interfaceId;
@@ -207,6 +429,11 @@ namespace NetworkMonitorApp
             sample.Timestamp = timestamp;
             sample.WifiState = wifiState;
             sample.WifiSignalPercent = signal;
+            sample.WifiChannel = wifiTelemetry.Channel;
+            sample.WifiBand = wifiTelemetry.Band;
+            sample.WifiRadioType = wifiTelemetry.RadioType;
+            sample.WifiReceiveRateMbps = wifiTelemetry.ReceiveRateMbps;
+            sample.WifiTransmitRateMbps = wifiTelemetry.TransmitRateMbps;
             sample.GatewayPingStatus = gatewayProbe.Status;
             sample.GatewayLatencyMs = gatewayProbe.LatencyMs;
             sample.InternetPingStatus = internetProbe.Status;
@@ -246,6 +473,11 @@ namespace NetworkMonitorApp
             sample.GatewayLossPct = RollingLoss(window, delegate(Sample s) { return s.GatewayPingStatus; });
             sample.InternetLossPct = RollingTargetLoss(window);
             sample.Events = String.Join(";", FindSampleEvents(sample, window.Take(window.Count - 1).ToList()));
+            if (wifiTelemetry.AccessPointChanged)
+                sample.Events = String.Join(";", new[] { sample.Events, "WifiAccessPointChanged" }.Where(delegate(string value) { return !String.IsNullOrEmpty(value); }).ToArray());
+            List<string> windowsEvents = WindowsNetworkEvents.Capture(timestamp);
+            if (windowsEvents.Count > 0)
+                sample.Events = String.Join(";", new[] { sample.Events }.Concat(windowsEvents).Where(delegate(string value) { return !String.IsNullOrEmpty(value); }).ToArray());
 
             sample.Connectivity = DetermineConnectivity(sample);
 
@@ -421,9 +653,10 @@ namespace NetworkMonitorApp
             catch { bytesReceived = null; bytesSent = null; interfaceId = null; }
         }
 
-        private static string GetNetworkSnapshot(out int? signalPercent, out string gateway, out string activeInterfaceType)
+        private static string GetNetworkSnapshot(out int? signalPercent, out WifiTelemetry wifiTelemetry, out string gateway, out string activeInterfaceType)
         {
             signalPercent = null;
+            wifiTelemetry = new WifiTelemetry();
             gateway = null;
             activeInterfaceType = "Unavailable";
             NetworkInterface[] interfaces;
@@ -461,7 +694,11 @@ namespace NetworkMonitorApp
             {
                 activeInterfaceType = DescribeInterfaceType(activeInterface.NetworkInterfaceType);
                 gateway = GetGateway(activeInterface, ipv6Route ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork);
-                if (activeInterface.NetworkInterfaceType == NetworkInterfaceType.Wireless80211) signalPercent = GetWifiSignalPercent();
+                if (activeInterface.NetworkInterfaceType == NetworkInterfaceType.Wireless80211)
+                {
+                    wifiTelemetry = WifiTelemetryReader.Read(activeInterface.Name);
+                    signalPercent = wifiTelemetry.SignalPercent;
+                }
             }
 
             bool routeInterfaceKnown = bestIndex.HasValue && activeInterface != null;
@@ -489,36 +726,6 @@ namespace NetworkMonitorApp
                     IPAddress address = item.Address;
                     if (address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any)) continue;
                     if (address.AddressFamily == preferredFamily) return address.ToString();
-                }
-            }
-            catch { }
-            return null;
-        }
-
-        private static int? GetWifiSignalPercent()
-        {
-            try
-            {
-                string netsh = Path.Combine(Environment.SystemDirectory, "netsh.exe");
-                if (!File.Exists(netsh)) return null;
-                ProcessStartInfo info = new ProcessStartInfo(netsh, "wlan show interfaces");
-                info.UseShellExecute = false;
-                info.CreateNoWindow = true;
-                info.RedirectStandardOutput = true;
-                info.RedirectStandardError = true;
-                using (Process process = Process.Start(info))
-                {
-                    if (!process.WaitForExit(1000))
-                    {
-                        try { process.Kill(); } catch { }
-                        return null;
-                    }
-                    string output = process.StandardOutput.ReadToEnd();
-                    Match match = Regex.Match(output, @"(?im)^\s*(?:Signal|Semnal)\s*:\s*(\d{1,3})\s*%");
-                    if (!match.Success) return null;
-                    int value;
-                    if (Int32.TryParse(match.Groups[1].Value, out value) && value >= 0 && value <= 100)
-                        return value;
                 }
             }
             catch { }
@@ -1703,6 +1910,8 @@ namespace NetworkMonitorApp
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Samples: {0}; nominal interval: 5 seconds", samples.Count));
             b.AppendLine("Measured average sample gap: " + Format(AverageIntervalSeconds(samples), " seconds"));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Measured averages: active Wi-Fi signal {0}; gateway ICMP {1}; IPv4 ICMP {2}.", Format(signal, "%"), Format(gateway, " ms"), Format(internet, " ms")));
+            b.AppendLine(FormatWifiTelemetry(samples, AppLanguage.English));
+            b.AppendLine(FormatWindowsEventSummary(samples, AppLanguage.English));
             b.AppendLine("Active Windows route interface: " + FormatInterfaceStats(samples, AppLanguage.English) + ". Tunnel identifies an OS tunnel-type interface; VPN products may also appear as another type. Interface indices are used only in memory.");
             b.AppendLine("Internet targets: " + FormatInternetTargetStats(samples, AppLanguage.English) + ". These independent public IP probes are logged by service name; target IPs are not stored.");
             b.AppendLine("Passive traffic on the active gateway interface: average download " + Format(download, " Mbps") + "; upload " + Format(upload, " Mbps") + ". This is current device traffic, not the connection's maximum speed.");
@@ -1849,6 +2058,8 @@ namespace NetworkMonitorApp
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Esantioane: {0}; frecventa nominala: 5 secunde", samples.Count));
             report.AppendLine("Interval mediu masurat intre esantioane: " + FormatLocalized(AverageIntervalSeconds(samples), " secunde", AppLanguage.Romanian));
             report.AppendLine("Medii observate: semnal Wi-Fi {0}; router {1}; Internet {2}.".Replace("{0}", FormatLocalized(averageSignal, "%", AppLanguage.Romanian)).Replace("{1}", FormatLocalized(averageGateway, " ms", AppLanguage.Romanian)).Replace("{2}", FormatLocalized(averageInternet, " ms", AppLanguage.Romanian)));
+            report.AppendLine(FormatWifiTelemetry(samples, AppLanguage.Romanian));
+            report.AppendLine(FormatWindowsEventSummary(samples, AppLanguage.Romanian));
             report.AppendLine("Interfata Windows folosita pentru ruta: " + FormatInterfaceStats(samples, AppLanguage.Romanian) + ". Indexul interfetei este folosit doar temporar.");
             report.AppendLine("Tinte IP independente: " + FormatInternetTargetStats(samples, AppLanguage.Romanian) + ". Adresele IP ale tintelor nu sunt scrise in jurnal.");
             report.AppendLine("Trafic pasiv pe interfata activa: descarcare medie " + FormatLocalized(averageDownload, " Mbps", AppLanguage.Romanian) + "; incarcare " + FormatLocalized(averageUpload, " Mbps", AppLanguage.Romanian) + ". Este traficul curent al calculatorului, nu viteza maxima a abonamentului.");
@@ -1993,6 +2204,45 @@ namespace NetworkMonitorApp
                 : String.Format(CultureInfo.InvariantCulture, "Observed comparison (not a controlled test): IPv4 ICMP median was {0:0.0} ms during quiet periods ({1} samples) and {2:0.0} ms while this PC exceeded 1 Mbps traffic ({3} samples), a {4:+0.0;-0.0;0.0} ms difference.{5} Correlation does not prove bufferbloat and excludes traffic from other devices.", comparison.QuietMedianMs.Value, comparison.QuietSamples, comparison.ActiveMedianMs.Value, comparison.ActiveSamples, delta, localComparison);
         }
 
+        private static string FormatWifiTelemetry(IList<Sample> samples, AppLanguage language)
+        {
+            bool ro = language == AppLanguage.Romanian;
+            Sample latest = (samples ?? new List<Sample>()).LastOrDefault(delegate(Sample sample)
+            {
+                return sample.WifiChannel.HasValue || !String.IsNullOrWhiteSpace(sample.WifiRadioType) || sample.WifiReceiveRateMbps.HasValue || sample.WifiTransmitRateMbps.HasValue;
+            });
+            if (latest == null) return ro ? "Detalii radio Wi-Fi: Windows nu a expus canalul, tipul radio sau ratele linkului pentru această sesiune." : "Wi-Fi radio details: Windows did not expose channel, radio type, or link rates for this session.";
+            string channel = latest.WifiChannel.HasValue ? latest.WifiChannel.Value.ToString(CultureInfo.InvariantCulture) : (ro ? "indisponibil" : "unavailable");
+            string band = String.IsNullOrWhiteSpace(latest.WifiBand) ? (ro ? "indisponibilă" : "unavailable") : latest.WifiBand;
+            string radio = String.IsNullOrWhiteSpace(latest.WifiRadioType) ? (ro ? "indisponibil" : "unavailable") : latest.WifiRadioType;
+            return ro
+                ? "Detalii radio Wi-Fi (ultima citire): canal " + channel + ", bandă " + band + ", radio " + radio + ", rate link recepție/transmisie " + FormatLocalized(latest.WifiReceiveRateMbps, " Mbps", language) + "/" + FormatLocalized(latest.WifiTransmitRateMbps, " Mbps", language) + ". Ratele linkului nu reprezintă viteza Internetului."
+                : "Wi-Fi radio details (latest reading): channel " + channel + ", band " + band + ", radio " + radio + ", receive/transmit link rate " + Format(latest.WifiReceiveRateMbps, " Mbps") + "/" + Format(latest.WifiTransmitRateMbps, " Mbps") + ". Link rates are not Internet throughput.";
+        }
+
+        private static string FormatWindowsEventSummary(IList<Sample> samples, AppLanguage language)
+        {
+            bool ro = language == AppLanguage.Romanian;
+            Dictionary<string, int> totals = new Dictionary<string, int>(StringComparer.Ordinal);
+            string[] tracked = new string[] { "WindowsWifiConnected", "WindowsWifiDisconnected", "WindowsWifiConnectFailed", "WindowsDnsTimeout", "WindowsDhcpIssue", "WindowsInterfaceDisconnected", "WindowsInterfaceConnected" };
+            foreach (Sample sample in samples ?? new List<Sample>())
+            foreach (string entry in (sample.Events ?? "").Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int separator = entry.LastIndexOf(':');
+                string key = separator > 0 ? entry.Substring(0, separator) : entry;
+                int count = 1;
+                if (!tracked.Contains(key) || (separator > 0 && !Int32.TryParse(entry.Substring(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out count))) continue;
+                if (!totals.ContainsKey(key)) totals[key] = 0;
+                totals[key] += count;
+            }
+            string access = WindowsNetworkEvents.ReadableThisSession
+                ? (ro ? "Windows: jurnale citite cu permisiunile utilizatorului." : "Windows logs: readable with current user permissions.")
+                : (ro ? "Windows: jurnalele WLAN/DHCP/Sistem nu au fost accesibile; măsurătorile active continuă." : "Windows logs: WLAN/DHCP/System logs were unavailable; active measurements continue.");
+            List<string> summary = totals.OrderBy(delegate(KeyValuePair<string, int> item) { return item.Key; })
+                .Select(delegate(KeyValuePair<string, int> item) { return Localization.Event(language, item.Key + ":" + item.Value.ToString(CultureInfo.InvariantCulture)); }).ToList();
+            return access + (summary.Count == 0 ? (ro ? " Nu au fost găsite evenimente relevante în timpul sesiunii." : " No relevant events were found during the session.") : " " + (ro ? "Evenimente observate: " : "Observed events: ") + String.Join("; ", summary.ToArray()) + ".");
+        }
+
         private static double? Average(IEnumerable<double> values)
         {
             List<double> list = values.ToList();
@@ -2108,7 +2358,7 @@ namespace NetworkMonitorApp
     {
         private const long MaxBytes = 10L * 1024L * 1024L;
         private const int RetainedRotatedFiles = 10;
-        private const string CsvHeader = "TimestampLocal,WifiState,WifiSignalPercent,ActiveInterfaceType,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpNonResponsePctRolling60s,InternetPingStatus,InternetIpv4LatencyMs,InternetIpv4IcmpNonResponsePctRolling60s,InternetIpv4Targets,InternetIpv4TargetsSucceeded,InternetIpv4TargetsAttempted,InternetIpv6LatencyMs,InternetIpv6Targets,InternetIpv6TargetsSucceeded,InternetIpv6TargetsAttempted,HttpsStatus,HttpsLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,HttpsUsedWindowsProxy,CaptivePortalSuspected,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps";
+        private const string CsvHeader = "TimestampLocal,WifiState,WifiSignalPercent,WifiChannel,WifiBand,WifiRadioType,WifiReceiveRateMbps,WifiTransmitRateMbps,ActiveInterfaceType,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpNonResponsePctRolling60s,InternetPingStatus,InternetIpv4LatencyMs,InternetIpv4IcmpNonResponsePctRolling60s,InternetIpv4Targets,InternetIpv4TargetsSucceeded,InternetIpv4TargetsAttempted,InternetIpv6LatencyMs,InternetIpv6Targets,InternetIpv6TargetsSucceeded,InternetIpv6TargetsAttempted,HttpsStatus,HttpsLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,HttpsUsedWindowsProxy,CaptivePortalSuspected,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps";
         private static readonly object Gate = new object();
         public static readonly string LogDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetworkMonitor", "Logs");
@@ -2135,6 +2385,11 @@ namespace NetworkMonitorApp
                     sample.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture),
                     sample.WifiState,
                     sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) : "",
+                    sample.WifiChannel.HasValue ? sample.WifiChannel.Value.ToString(CultureInfo.InvariantCulture) : "",
+                    sample.WifiBand,
+                    sample.WifiRadioType,
+                    Number(sample.WifiReceiveRateMbps),
+                    Number(sample.WifiTransmitRateMbps),
                     sample.ActiveInterfaceType,
                     sample.GatewayPingStatus,
                     Number(sample.GatewayLatencyMs),
@@ -2913,6 +3168,8 @@ namespace NetworkMonitorApp
             statusLabel.Text = Localization.Get(language, "Running");
             overviewSummary.Text = Localization.Get(language, "ActiveMonitoringSummary");
             ShowMonitorView();
+            WindowsNetworkEvents.BeginSession(DateTimeOffset.Now);
+            WifiTelemetryReader.BeginSession();
             timer = new System.Threading.Timer(SampleTick, null, 0, 5000);
         }
 
@@ -3445,6 +3702,26 @@ namespace NetworkMonitorApp
         public static int Run(string outputPath)
         {
             List<string> results = new List<string>();
+            WifiTelemetry parsedWifi = WifiTelemetryReader.Parse("Signal : 87%\r\nRadio type : 802.11ax\r\nChannel : 44\r\nBand : 5 GHz\r\nReceive rate (Mbps) : 1201\r\nTransmit rate (Mbps) : 960\r\nBSSID : AA-BB-CC-DD-EE-FF\r\nSSID : PrivateNetwork");
+            bool wifiTelemetryParsing = parsedWifi.SignalPercent == 87 && parsedWifi.Channel == 44 && parsedWifi.Band == "5 GHz" &&
+                parsedWifi.RadioType == "802.11ax" && parsedWifi.ReceiveRateMbps == 1201 && parsedWifi.TransmitRateMbps == 960;
+            WifiTelemetry selectedWifi = WifiTelemetryReader.Parse("Name : Wi-Fi\r\nSignal : 30%\r\nChannel : 6\r\n\r\nName : Wi-Fi 2\r\nSignal : 87%\r\nChannel : 44\r\n", "Wi-Fi 2");
+            wifiTelemetryParsing = wifiTelemetryParsing && selectedWifi.SignalPercent == 87 && selectedWifi.Channel == 44 && selectedWifi.Band == null &&
+                WifiTelemetryReader.Parse("Channel : 999").Channel == null && WifiTelemetryReader.Parse("Signal : 120%").SignalPercent == null;
+            results.Add((wifiTelemetryParsing ? "PASS" : "FAIL") + " | Wi-Fi telemetry parsing | " + (wifiTelemetryParsing ? "signal, channel, band and link rates parsed without storing BSSID/SSID" : "parsed Wi-Fi telemetry mismatch"));
+            bool eventMapping = WindowsNetworkEvents.Classify("Microsoft-Windows-WLAN-AutoConfig/Operational", "Microsoft-Windows-WLAN-AutoConfig", 8003) == "WindowsWifiDisconnected" &&
+                WindowsNetworkEvents.Classify("System", "Microsoft-Windows-DNS-Client", 1014) == "WindowsDnsTimeout" &&
+                WindowsNetworkEvents.Classify("Microsoft-Windows-Dhcp-Client/Operational", "Microsoft-Windows-Dhcp-Client", 1001, 2) == "WindowsDhcpIssue" &&
+                WindowsNetworkEvents.Classify("Microsoft-Windows-Dhcp-Client/Operational", "Microsoft-Windows-Dhcp-Client", 1001, 4) == null &&
+                WindowsNetworkEvents.Classify("System", "UnrelatedProvider", 9999) == null;
+            results.Add((eventMapping ? "PASS" : "FAIL") + " | Windows event classification and filtering | " + (eventMapping ? "known WLAN/DNS categories retained; unrelated IDs ignored" : "event classification mismatch"));
+            WindowsNetworkEvents.BeginSession(DateTimeOffset.Now);
+            List<string> readableWindowsEvents = WindowsNetworkEvents.Capture(DateTimeOffset.Now);
+            bool eventReaderSafe = readableWindowsEvents.All(delegate(string value) { return Regex.IsMatch(value, @"^Windows[A-Za-z]+:\d+$", RegexOptions.CultureInvariant); });
+            results.Add((eventReaderSafe ? "PASS" : "FAIL") + " | Windows event log read-only fallback | " + (eventReaderSafe ? (WindowsNetworkEvents.ReadableThisSession ? "accessible channels return categories only" : "unavailable channels degrade gracefully without admin") : "unexpected event payload shape"));
+            bool newEventLocalization = Localization.Event(AppLanguage.English, "WindowsWifiDisconnected:2").Contains("Wi-Fi disconnected ×2") &&
+                Localization.Event(AppLanguage.Romanian, "WifiAccessPointChanged").Contains("Punctul de acces Wi-Fi s-a schimbat");
+            results.Add((newEventLocalization ? "PASS" : "FAIL") + " | new diagnostic event localization | " + (newEventLocalization ? "English and Romanian strings render event categories" : "new event translation missing"));
             bool stopGate = !MonitoringSessionPolicy.CanStop(true, false) &&
                 MonitoringSessionPolicy.CanStop(true, true) && !MonitoringSessionPolicy.CanStop(false, true);
             bool duplicateClickGate = MonitoringSessionPolicy.ShouldAcceptToggle(0, 100, 1000, 500) &&
@@ -3455,6 +3732,16 @@ namespace NetworkMonitorApp
             Test(results, "healthy window", HealthyWindow(), "Nu s-au detectat intreruperi");
             Test(results, "wifi disconnect", WindowWith(delegate(Sample s) { s.WifiState = "Disconnected"; }), "Wi-Fi");
             Test(results, "weak signal", WindowWith(delegate(Sample s) { s.WifiSignalPercent = 20; }), "Semnal Wi-Fi");
+            IList<Sample> windowsEvidence = WindowWith(delegate(Sample s)
+            {
+                s.WifiChannel = 44; s.WifiBand = "5 GHz"; s.WifiRadioType = "802.11ax"; s.WifiReceiveRateMbps = 1201; s.WifiTransmitRateMbps = 960;
+                s.Events = "WindowsWifiDisconnected:1;WindowsDhcpIssue:2;WifiAccessPointChanged";
+            });
+            string windowsEvidenceReport = DiagnosticEngine.Analyze(windowsEvidence, AppLanguage.English);
+            string windowsEvidenceRomanian = DiagnosticEngine.Analyze(windowsEvidence, AppLanguage.Romanian);
+            bool windowsEvidenceReported = windowsEvidenceReport.Contains("channel 44") && windowsEvidenceReport.Contains("Windows log: Wi-Fi disconnected ×6") &&
+                windowsEvidenceReport.Contains("Windows logs:") && windowsEvidenceRomanian.Contains("canal 44") && windowsEvidenceRomanian.Contains("Jurnal Windows: Wi-Fi deconectat ×6");
+            results.Add((windowsEvidenceReported ? "PASS" : "FAIL") + " | Wi-Fi and Windows evidence report | " + (windowsEvidenceReported ? "radio details and event categories appear in English and Romanian" : "Wi-Fi or Windows event evidence is missing"));
             Test(results, "gateway ICMP non-response", WindowWith(delegate(Sample s) { s.GatewayPingStatus = "TimedOut"; s.GatewayLatencyMs = null; }), "probele ICMP nu au primit răspuns");
             Test(results, "all independent probes fail", WindowWith(delegate(Sample s) { s.InternetPingStatus = "TimedOut"; s.HttpsStatus = "AllFailed"; s.HttpsSucceeded = 0; s.HttpsAttempted = 3; }), "toate tintele ICMP IPv4/IPv6 si cele trei endpointuri HTTPS au esuat impreuna");
             Test(results, "one HTTPS endpoint fails but others work", WindowWith(delegate(Sample s) { s.InternetPingStatus = "TimedOut"; s.HttpsStatus = "Success"; s.HttpsSucceeded = 2; s.HttpsAttempted = 3; }), "nu confirma o cadere de Internet");
@@ -3777,10 +4064,14 @@ namespace NetworkMonitorApp
             TestOidc(results);
             IList<Sample> privacySamples = HealthyWindow();
             privacySamples[0].Ipv6TargetResults = new List<InternetTargetObservation> { new InternetTargetObservation { Name = "Cloudflare IPv6", Status = "Success" } };
+            privacySamples[0].WifiChannel = 44; privacySamples[0].WifiBand = "5 GHz"; privacySamples[0].WifiRadioType = "802.11ax";
+            privacySamples[0].WifiReceiveRateMbps = 1201; privacySamples[0].WifiTransmitRateMbps = 960;
+            privacySamples[0].Events = "WindowsWifiDisconnected:2;WindowsDhcpIssue:1;WifiAccessPointChanged;MyPrivateWifi;WindowsRawMessage:secret";
             string summary = ChatGptPlanClient.BuildAggregatedSummary(privacySamples, AppLanguage.English);
             bool sanitized = summary.IndexOf("192.0.2.45", StringComparison.Ordinal) < 0 && summary.IndexOf("MyPrivateWifi", StringComparison.Ordinal) < 0 &&
                 summary.IndexOf("1.1.1.1", StringComparison.Ordinal) < 0 && summary.IndexOf("8.8.8.8", StringComparison.Ordinal) < 0 &&
-                summary.IndexOf("2606:4700:4700::1111", StringComparison.Ordinal) < 0;
+                summary.IndexOf("2606:4700:4700::1111", StringComparison.Ordinal) < 0 && summary.IndexOf("AA-BB-CC-DD-EE-FF", StringComparison.Ordinal) < 0 &&
+                summary.IndexOf("WindowsRawMessage", StringComparison.Ordinal) < 0 && summary.Contains("WindowsWifiDisconnected:2") && summary.Contains("wifi_channel=44");
             results.Add((sanitized ? "PASS" : "FAIL") + " | AI summary privacy | " + (sanitized ? "no raw network identifiers" : "raw identifier present"));
             Dictionary<string, object> aiPayload = ChatGptPlanClient.CreateResponsesPayload("test-model",
                 new Dictionary<string, object> { { "role", "developer" }, { "content", "instructions" } },
@@ -3825,14 +4116,15 @@ namespace NetworkMonitorApp
                 !NetworkProbe.CalculateMegabitsPerSecond(100, 200, 1).HasValue &&
                 !NetworkProbe.CalculateMegabitsPerSecond(200, 100, 0).HasValue;
             results.Add((rateCalculation ? "PASS" : "FAIL") + " | passive network traffic rates | " + (rateCalculation ? "Mbps conversion and counter resets handled" : "traffic rate calculation mismatch"));
-            bool csvSchema = CsvLogger.HeaderMatches("\uFEFF" + "TimestampLocal,WifiState,WifiSignalPercent,ActiveInterfaceType,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpNonResponsePctRolling60s,InternetPingStatus,InternetIpv4LatencyMs,InternetIpv4IcmpNonResponsePctRolling60s,InternetIpv4Targets,InternetIpv4TargetsSucceeded,InternetIpv4TargetsAttempted,InternetIpv6LatencyMs,InternetIpv6Targets,InternetIpv6TargetsSucceeded,InternetIpv6TargetsAttempted,HttpsStatus,HttpsLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,HttpsUsedWindowsProxy,CaptivePortalSuspected,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps") &&
+            bool csvSchema = CsvLogger.HeaderMatches("\uFEFF" + "TimestampLocal,WifiState,WifiSignalPercent,WifiChannel,WifiBand,WifiRadioType,WifiReceiveRateMbps,WifiTransmitRateMbps,ActiveInterfaceType,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpNonResponsePctRolling60s,InternetPingStatus,InternetIpv4LatencyMs,InternetIpv4IcmpNonResponsePctRolling60s,InternetIpv4Targets,InternetIpv4TargetsSucceeded,InternetIpv4TargetsAttempted,InternetIpv6LatencyMs,InternetIpv6Targets,InternetIpv6TargetsSucceeded,InternetIpv6TargetsAttempted,HttpsStatus,HttpsLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,HttpsUsedWindowsProxy,CaptivePortalSuspected,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps") &&
                 !CsvLogger.HeaderMatches("TimestampLocal,WifiState,Events");
             Sample csvPrivacy = BaseSample();
             csvPrivacy.InternetTargetResults = new List<InternetTargetObservation> { new InternetTargetObservation { Name = "Cloudflare", Status = "Success" } };
             csvPrivacy.Ipv6TargetResults = new List<InternetTargetObservation> { new InternetTargetObservation { Name = "Cloudflare IPv6", Status = "Success" } };
             string csvRow = CsvLogger.FormatSampleRow(csvPrivacy);
             csvSchema = csvSchema && CsvLogger.CsvColumnCount == csvRow.Split(',').Length &&
-                csvRow.IndexOf("1.1.1.1", StringComparison.Ordinal) < 0 && csvRow.IndexOf("2606:4700:4700::1111", StringComparison.Ordinal) < 0;
+                csvRow.IndexOf("1.1.1.1", StringComparison.Ordinal) < 0 && csvRow.IndexOf("2606:4700:4700::1111", StringComparison.Ordinal) < 0 &&
+                csvRow.IndexOf("PrivateNetwork", StringComparison.Ordinal) < 0 && csvRow.IndexOf("AA-BB-CC-DD-EE-FF", StringComparison.Ordinal) < 0;
             results.Add((csvSchema ? "PASS" : "FAIL") + " | CSV schema migration guard | " + (csvSchema ? "new schema recognized; old file will be rotated intact" : "CSV schema guard failed"));
 
             bool speedProviderPolicy = SpeedTestProviderCatalog.All.Count == 4 &&

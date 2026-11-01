@@ -182,6 +182,14 @@ namespace NetworkMonitorApp
         public static string Event(AppLanguage language, string code)
         {
             bool ro = language == AppLanguage.Romanian;
+            string count = "";
+            int separator = (code ?? "").LastIndexOf(':');
+            int parsedCount;
+            if (separator > 0 && Int32.TryParse(code.Substring(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out parsedCount))
+            {
+                count = " ×" + parsedCount.ToString(CultureInfo.InvariantCulture);
+                code = code.Substring(0, separator);
+            }
             switch (code)
             {
                 case "WiFiDisconnected": return ro ? "Wi-Fi deconectat" : "Wi-Fi disconnected";
@@ -201,6 +209,14 @@ namespace NetworkMonitorApp
                 case "InternetLatencySpike": return ro ? "Latența Internetului a crescut" : "Internet latency spike";
                 case "HTTPSLatencySpike": return ro ? "Latența HTTPS a crescut" : "HTTPS latency spike";
                 case "HTTPSProbeDisagreement": return ro ? "Endpointurile HTTPS au rezultate diferite" : "HTTPS endpoints disagree";
+                case "WifiAccessPointChanged": return (ro ? "Punctul de acces Wi-Fi s-a schimbat" : "Wi-Fi access point changed") + count;
+                case "WindowsWifiConnected": return (ro ? "Jurnal Windows: Wi-Fi conectat" : "Windows log: Wi-Fi connected") + count;
+                case "WindowsWifiDisconnected": return (ro ? "Jurnal Windows: Wi-Fi deconectat" : "Windows log: Wi-Fi disconnected") + count;
+                case "WindowsWifiConnectFailed": return (ro ? "Jurnal Windows: conectare Wi-Fi eșuată" : "Windows log: Wi-Fi connection failed") + count;
+                case "WindowsDnsTimeout": return (ro ? "Jurnal Windows: timeout DNS" : "Windows log: DNS timeout") + count;
+                case "WindowsDhcpIssue": return (ro ? "Jurnal Windows: problemă DHCP" : "Windows log: DHCP issue") + count;
+                case "WindowsInterfaceDisconnected": return (ro ? "Jurnal Windows: interfață deconectată" : "Windows log: interface disconnected") + count;
+                case "WindowsInterfaceConnected": return (ro ? "Jurnal Windows: interfață reconectată" : "Windows log: interface reconnected") + count;
                 case "ProbeError": return Localization.Get(language, "ProbeError");
                 default: return code;
             }

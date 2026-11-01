@@ -262,6 +262,20 @@ namespace NetworkMonitorApp
             double? internet = Average(samples.Where(delegate(Sample s) { return s.InternetLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.InternetLatencyMs.Value; }));
             double? download = Average(samples.Where(delegate(Sample s) { return s.DownloadMbps.HasValue; }).Select(delegate(Sample s) { return s.DownloadMbps.Value; }));
             double? upload = Average(samples.Where(delegate(Sample s) { return s.UploadMbps.HasValue; }).Select(delegate(Sample s) { return s.UploadMbps.Value; }));
+            Sample latestWifi = samples.LastOrDefault(delegate(Sample s) { return s.WifiChannel.HasValue || !String.IsNullOrEmpty(s.WifiRadioType) || s.WifiReceiveRateMbps.HasValue || s.WifiTransmitRateMbps.HasValue; });
+            Dictionary<string, int> windowsEventCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            string[] safeEventTypes = new string[] { "WifiAccessPointChanged", "WindowsWifiConnected", "WindowsWifiDisconnected", "WindowsWifiConnectFailed", "WindowsDnsTimeout", "WindowsDhcpIssue", "WindowsInterfaceDisconnected", "WindowsInterfaceConnected" };
+            foreach (Sample sample in samples)
+            foreach (string entry in (sample.Events ?? "").Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                int separator = entry.LastIndexOf(':');
+                string name = separator > 0 ? entry.Substring(0, separator) : entry;
+                int count = 1;
+                if (separator > 0) Int32.TryParse(entry.Substring(separator + 1), NumberStyles.None, CultureInfo.InvariantCulture, out count);
+                if (!safeEventTypes.Contains(name) || count < 1 || count > 4096) continue;
+                if (!windowsEventCounts.ContainsKey(name)) windowsEventCounts[name] = 0;
+                windowsEventCounts[name] += count;
+            }
             double durationMinutes = samples.Count < 2 ? 0 : (samples[samples.Count - 1].Timestamp - samples[0].Timestamp).TotalMinutes;
             StringBuilder b = new StringBuilder();
             b.AppendLine("samples=" + samples.Count.ToString(CultureInfo.InvariantCulture));
@@ -269,6 +283,12 @@ namespace NetworkMonitorApp
             b.AppendLine("wifi_disconnect_samples=" + wifiDrops.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("weak_wifi_signal_samples_below_35_percent=" + weakSignal.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("wifi_signal_average_percent=" + FormatAggregate(signal));
+            b.AppendLine("wifi_channel=" + (latestWifi != null && latestWifi.WifiChannel.HasValue ? latestWifi.WifiChannel.Value.ToString(CultureInfo.InvariantCulture) : "not available"));
+            b.AppendLine("wifi_band=" + (latestWifi != null && !String.IsNullOrEmpty(latestWifi.WifiBand) ? latestWifi.WifiBand : "not available"));
+            b.AppendLine("wifi_radio_type=" + (latestWifi != null && !String.IsNullOrEmpty(latestWifi.WifiRadioType) ? latestWifi.WifiRadioType : "not available"));
+            b.AppendLine("wifi_receive_transmit_link_rate_mbps=" + (latestWifi == null ? "not available" : FormatAggregate(latestWifi.WifiReceiveRateMbps) + "/" + FormatAggregate(latestWifi.WifiTransmitRateMbps)));
+            b.AppendLine("wifi_access_point_changes=" + (windowsEventCounts.ContainsKey("WifiAccessPointChanged") ? windowsEventCounts["WifiAccessPointChanged"] : 0).ToString(CultureInfo.InvariantCulture));
+            b.AppendLine("windows_network_event_categories=" + (windowsEventCounts.Count == 0 ? "none observed" : String.Join(";", windowsEventCounts.OrderBy(delegate(KeyValuePair<string, int> item) { return item.Key; }).Select(delegate(KeyValuePair<string, int> item) { return item.Key + ":" + item.Value.ToString(CultureInfo.InvariantCulture); }).ToArray())));
             b.AppendLine("gateway_icmp_no_reply_samples=" + gatewayFailed.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("gateway_icmp_average_latency_ms=" + FormatAggregate(gateway));
             b.AppendLine("samples_with_no_ipv4_or_ipv6_target_reply=" + internetFailed.ToString(CultureInfo.InvariantCulture));
@@ -287,8 +307,8 @@ namespace NetworkMonitorApp
             AppendLatencyStatistics(b, "internet", samples.Select(delegate(Sample s) { return s.InternetLatencyMs; }));
             AppendLatencyStatistics(b, "internet_ipv6", samples.Select(delegate(Sample s) { return s.Ipv6LatencyMs; }));
             b.AppendLine(language == AppLanguage.Romanian
-                ? "Lipsa raspunsului ICMP nu dovedeste pierdere de trafic; IPv4 si IPv6 au rute separate. DNS foloseste resolverul Windows. HTTPS poate trece prin proxy-ul Windows; portalul/interceptarea sunt doar suspectii. Comparatia de trafic este observata, nu controlata. Sumarul exclude SSID, adrese IP, hosturi personalizate, timestampuri exacte si CSV."
-                : "ICMP non-response does not prove traffic loss; IPv4 and IPv6 can use different routes. DNS uses the Windows resolver. HTTPS may use the Windows proxy; portal/interception detection is only a suspicion. Traffic comparison is observational, not controlled. This summary excludes SSID, IP addresses, custom hosts, exact timestamps, and raw CSV content.");
+                ? "Lipsa raspunsului ICMP nu dovedeste pierdere de trafic; IPv4 si IPv6 au rute separate. DNS foloseste resolverul Windows. HTTPS poate trece prin proxy-ul Windows; portalul/interceptarea sunt doar suspectii. Comparatia de trafic este observata, nu controlata. Sumarul poate include canalul, banda, tipul radio, rate link agregate si numarul pe categorii de evenimente Windows; exclude SSID, BSSID, adrese IP, continutul mesajelor Windows, hosturi personalizate, timestampuri exacte si CSV."
+                : "ICMP non-response does not prove traffic loss; IPv4 and IPv6 can use different routes. DNS uses the Windows resolver. HTTPS may use the Windows proxy; portal/interception detection is only a suspicion. Traffic comparison is observational, not controlled. This summary may include Wi-Fi channel, band, radio type, aggregate link rates, and counts by Windows event category; it excludes SSID, BSSID, IP addresses, Windows event message text, custom hosts, exact timestamps, and raw CSV content.");
             return b.ToString();
         }
 
