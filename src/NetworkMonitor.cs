@@ -3722,6 +3722,12 @@ namespace NetworkMonitorApp
             bool newEventLocalization = Localization.Event(AppLanguage.English, "WindowsWifiDisconnected:2").Contains("Wi-Fi disconnected ×2") &&
                 Localization.Event(AppLanguage.Romanian, "WifiAccessPointChanged").Contains("Punctul de acces Wi-Fi s-a schimbat");
             results.Add((newEventLocalization ? "PASS" : "FAIL") + " | new diagnostic event localization | " + (newEventLocalization ? "English and Romanian strings render event categories" : "new event translation missing"));
+            bool aiDataDisclosure = Localization.Get(AppLanguage.English, "AIDataNotice").Contains("counts by Windows event category") &&
+                Localization.Get(AppLanguage.English, "AIConsentPrompt").Contains("does not send raw CSV") &&
+                Localization.Get(AppLanguage.Romanian, "AIDataNotice").Contains("numarul pe categorii de evenimente Windows") &&
+                Localization.Get(AppLanguage.Romanian, "AIConsentPrompt").Contains("BSSID") &&
+                !Localization.Get(AppLanguage.English, "AIConsentPrompt").Contains("event message contents");
+            results.Add((aiDataDisclosure ? "PASS" : "FAIL") + " | AI data disclosure for new evidence | " + (aiDataDisclosure ? "both languages disclose aggregate Wi-Fi/event fields and excluded identifiers" : "AI data consent notice omits new aggregate fields"));
             bool stopGate = !MonitoringSessionPolicy.CanStop(true, false) &&
                 MonitoringSessionPolicy.CanStop(true, true) && !MonitoringSessionPolicy.CanStop(false, true);
             bool duplicateClickGate = MonitoringSessionPolicy.ShouldAcceptToggle(0, 100, 1000, 500) &&
