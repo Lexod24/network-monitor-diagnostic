@@ -219,7 +219,7 @@ namespace NetworkMonitorApp
 
     internal sealed class AiProviderSettingsForm : Form
     {
-        private readonly ComboBox provider;
+        private readonly GlassComboBox provider;
         private readonly TextBox model;
         private readonly TextBox apiKey;
         private readonly Label hint;
@@ -237,7 +237,7 @@ namespace NetworkMonitorApp
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
             ClientSize = new Size(560, 462);
-            BackColor = Color.FromArgb(246, 247, 249);
+            BackColor = LiquidGlassTheme.Window;
             Font = new Font("Segoe UI", 9F);
 
             Label eyebrow = new Label { Text = ro ? "PREFERINȚE" : "PREFERENCES", Location = new Point(28, 22), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(100, 110, 123) };
@@ -245,12 +245,11 @@ namespace NetworkMonitorApp
             Label subtitle = new Label { Text = ro ? "AI-ul este opțional. Diagnosticul local funcționează și fără cont sau cheie." : "AI is optional. Local diagnosis works without an account or API key.", Location = new Point(28, 78), Size = new Size(500, 36), ForeColor = Color.FromArgb(102, 111, 123), AutoEllipsis = true };
             Controls.Add(eyebrow); Controls.Add(title); Controls.Add(subtitle);
 
-            Panel card = new Panel { Location = new Point(20, 126), Size = new Size(520, 258), BackColor = Color.White, Padding = new Padding(20) };
-            card.Paint += delegate(object sender, PaintEventArgs e) { using (Pen pen = new Pen(Color.FromArgb(226, 230, 235))) e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1); };
+            SoftSurfacePanel card = new SoftSurfacePanel { Location = new Point(20, 126), Size = new Size(520, 258), CornerRadius = 22, Padding = new Padding(20) };
             Controls.Add(card);
             Label providerLabel = MakeLabel(ro ? "Furnizor" : "Provider", 20, 18);
             card.Controls.Add(providerLabel);
-            provider = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(160, 16), Width = 318, Height = 28, Font = new Font("Segoe UI", 9F), IntegralHeight = false };
+            provider = new GlassComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(160, 16), Width = 318, Height = 28, Font = new Font("Segoe UI", 9F), IntegralHeight = false };
             provider.Items.AddRange(ro
                 ? new object[] { "Dezactivat (doar diagnostic local)", "Ollama (local; fara cont/cheie)", "Gemini API (cheia ta)", "Groq API (cheia ta)" }
                 : new object[] { "Disabled (local diagnosis only)", "Ollama (local; no account/key)", "Gemini API (your key)", "Groq API (your key)" });
@@ -267,13 +266,15 @@ namespace NetworkMonitorApp
 
             hint = new Label { Location = new Point(20, 148), Size = new Size(458, 80), AutoEllipsis = true, ForeColor = Color.FromArgb(91, 101, 114), Font = new Font("Segoe UI", 8.5F) };
             card.Controls.Add(hint);
-            Button save = new Button { Text = ro ? "Salvează" : "Save", Location = new Point(322, 404), Size = new Size(104, 36), DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(10, 110, 235), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            Button save = new GlassButton { Text = ro ? "Salvează" : "Save", Location = new Point(322, 404), Size = new Size(104, 36), DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
             save.FlatAppearance.BorderSize = 0;
             save.Click += SaveClicked;
-            Button cancel = new Button { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 404), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat, BackColor = Color.White, ForeColor = Color.FromArgb(63, 71, 83), Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
-            cancel.FlatAppearance.BorderColor = Color.FromArgb(221, 225, 231);
+            Button cancel = new GlassButton { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 404), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            cancel.FlatAppearance.BorderColor = LiquidGlassTheme.Stroke;
             Controls.Add(save); Controls.Add(cancel);
             AcceptButton = save; CancelButton = cancel;
+            LiquidGlassTheme.ApplyTree(this, save);
+            GlassWindowEffects.Attach(this, true);
             ProviderChanged(null, EventArgs.Empty);
         }
 
@@ -321,3 +322,4 @@ namespace NetworkMonitorApp
         }
     }
 }
+
