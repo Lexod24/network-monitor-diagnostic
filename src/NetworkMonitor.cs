@@ -928,8 +928,6 @@ namespace NetworkMonitorApp
 
             aiSettingsButton = new Button();
             aiSettingsButton.Text = Localization.Get(language, "AISettings");
-            latencyChart.Language = language;
-            latencyChart.Invalidate();
             aiSettingsButton.Size = new Size(150, 32);
             aiSettingsButton.Location = new Point(640, 14);
             aiSettingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
@@ -1620,8 +1618,16 @@ namespace NetworkMonitorApp
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
-            return 0;
+            try
+            {
+                Application.Run(new MainForm());
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Network Monitor could not start:\r\n\r\n" + ex, "Network Monitor - Startup error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return 1;
+            }
         }
     }
 }
