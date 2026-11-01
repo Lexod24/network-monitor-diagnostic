@@ -880,14 +880,16 @@ namespace NetworkMonitorApp
             e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             Rectangle plot = new Rectangle(48, 23, Math.Max(1, ClientSize.Width - 62), Math.Max(1, ClientSize.Height - 49));
             TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartTitle"), Font, new Point(8, 4), Color.FromArgb(55, 65, 81));
-            double maximum = samples.SelectMany(delegate(Sample s) { return new double?[] { s.GatewayLatencyMs, s.InternetLatencyMs }; })
+            double maximum = samples.SelectMany(delegate(Sample s) { return new double?[] { s.GatewayLatencyMs, s.InternetLatencyMs, s.Ipv6LatencyMs }; })
                 .Where(delegate(double? v) { return v.HasValue; }).Select(delegate(double? v) { return v.Value; }).DefaultIfEmpty(50).Max();
             maximum = Math.Max(25, Math.Ceiling(maximum / 25.0) * 25.0);
             using (Pen gridPen = new Pen(Color.FromArgb(225, 230, 235)))
-            using (Pen gatewayPen = new Pen(Color.FromArgb(28, 110, 210), 2F))
-            using (Pen internetPen = new Pen(Color.FromArgb(225, 125, 35), 2F))
+            using (Pen gatewayPen = new Pen(Color.FromArgb(10, 110, 235), 2F))
+            using (Pen internetPen = new Pen(Color.FromArgb(220, 132, 48), 2F))
+            using (Pen ipv6Pen = new Pen(Color.FromArgb(38, 151, 116), 2F))
             using (Brush pointGateway = new SolidBrush(gatewayPen.Color))
             using (Brush pointInternet = new SolidBrush(internetPen.Color))
+            using (Brush pointIpv6 = new SolidBrush(ipv6Pen.Color))
             {
                 for (int i = 0; i <= 4; i++)
                 {
@@ -897,8 +899,11 @@ namespace NetworkMonitorApp
                 }
                 DrawSeries(e.Graphics, plot, maximum, gatewayPen, pointGateway, delegate(Sample s) { return s.GatewayLatencyMs; });
                 DrawSeries(e.Graphics, plot, maximum, internetPen, pointInternet, delegate(Sample s) { return s.InternetLatencyMs; });
-                TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartGateway"), Font, new Point(Math.Max(55, ClientSize.Width - 145), 4), gatewayPen.Color);
-                TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartInternet"), Font, new Point(Math.Max(110, ClientSize.Width - 75), 4), internetPen.Color);
+                DrawSeries(e.Graphics, plot, maximum, ipv6Pen, pointIpv6, delegate(Sample s) { return s.Ipv6LatencyMs; });
+                int legend = Math.Max(55, ClientSize.Width - 230);
+                TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartGateway"), Font, new Point(legend, 4), gatewayPen.Color);
+                TextRenderer.DrawText(e.Graphics, "IPv4", Font, new Point(legend + 80, 4), internetPen.Color);
+                TextRenderer.DrawText(e.Graphics, "IPv6", Font, new Point(legend + 135, 4), ipv6Pen.Color);
             }
             if (samples.Count == 0) TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartEmpty"), Font, plot, Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
@@ -916,6 +921,37 @@ namespace NetworkMonitorApp
                 if (previous.HasValue) graphics.DrawLine(pen, previous.Value, current);
                 graphics.FillEllipse(brush, x - 2.5F, y - 2.5F, 5F, 5F);
                 previous = current;
+            }
+        }
+    }
+
+    internal sealed class SoftSurfacePanel : Panel
+    {
+        public Color BorderColor = Color.FromArgb(229, 232, 237);
+        public int CornerRadius = 14;
+
+        public SoftSurfacePanel()
+        {
+            DoubleBuffered = true;
+            BackColor = Color.White;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            Rectangle bounds = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+            using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
+            using (Pen pen = new Pen(BorderColor, 1F))
+            {
+                int diameter = Math.Max(2, CornerRadius * 2);
+                path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+                path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+                path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+                path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+                path.CloseFigure();
+                e.Graphics.DrawPath(pen, path);
             }
         }
     }
@@ -1491,7 +1527,26 @@ namespace NetworkMonitorApp
         private readonly Label headingLabel;
         private readonly Label footerLabel;
         private readonly Label aiStatusLabel;
-        private readonly GroupBox diagnosisGroup;
+        private readonly SoftSurfacePanel diagnosisGroup;
+        private readonly Label diagnosisHeading;
+        private readonly Label overviewSummary;
+        private readonly Label viewTitle;
+        private readonly Button monitorViewButton;
+        private readonly Button reportViewButton;
+        private readonly Panel monitorPage;
+        private readonly Panel reportPage;
+        private readonly Panel viewHost;
+        private readonly Panel monitorStack;
+        private readonly TableLayoutPanel metricsLayout;
+        private readonly Label wifiTitle;
+        private readonly Label signalTitle;
+        private readonly Label gatewayTitle;
+        private readonly Label internetTitle;
+        private readonly Label dnsTitle;
+        private readonly Label downloadTitle;
+        private readonly Label uploadTitle;
+        private readonly Label reportIntro;
+        private readonly Label reportEyebrow;
         private AppLanguage language = AppLanguage.English;
         private readonly object samplesGate = new object();
         private readonly List<Sample> samples = new List<Sample>();
@@ -1506,191 +1561,179 @@ namespace NetworkMonitorApp
             catch { }
             Text = Localization.Get(language, "AppTitle");
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(1000, 650);
-            ClientSize = new Size(1120, 760);
+            MinimumSize = new Size(980, 700);
+            ClientSize = new Size(1260, 860);
             Font = new Font("Segoe UI", 9F);
-            BackColor = Color.FromArgb(245, 247, 250);
+            BackColor = Color.FromArgb(246, 247, 249);
 
-            Panel header = new Panel();
-            header.Dock = DockStyle.Top;
-            header.Height = 126;
-            header.BackColor = Color.White;
+            Panel header = new Panel { Dock = DockStyle.Top, Height = 118, BackColor = Color.White, Padding = new Padding(26, 12, 24, 0) };
             Controls.Add(header);
 
-            headingLabel = new Label();
-            headingLabel.Text = Localization.Get(language, "Heading");
-            headingLabel.Font = new Font("Segoe UI Semibold", 16F, FontStyle.Bold);
-            headingLabel.AutoSize = true;
-            headingLabel.Location = new Point(18, 12);
+            headingLabel = new Label { Text = Localization.Get(language, "Heading"), Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), AutoSize = true, Location = new Point(26, 14), ForeColor = Color.FromArgb(28, 31, 36) };
             header.Controls.Add(headingLabel);
+            Label headerSubtitle = new Label { Text = language == AppLanguage.Romanian ? "Monitorizare clară. Pași practici." : "Clear monitoring. Practical next steps.", Font = new Font("Segoe UI", 9.5F), AutoSize = true, Location = new Point(28, 48), ForeColor = Color.FromArgb(111, 118, 128) };
+            header.Controls.Add(headerSubtitle);
 
-            languageSelector = new ComboBox();
-            languageSelector.DropDownStyle = ComboBoxStyle.DropDownList;
+            languageSelector = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Size = new Size(120, 30), Anchor = AnchorStyles.Top | AnchorStyles.Right };
             languageSelector.Items.Add(Localization.Get(AppLanguage.English, "English"));
             languageSelector.Items.Add(Localization.Get(AppLanguage.Romanian, "Romanian"));
             languageSelector.SelectedIndex = 0;
-            languageSelector.Size = new Size(112, 28);
-            languageSelector.Location = new Point(960, 58);
-            languageSelector.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            languageSelector.SelectedIndexChanged += LanguageChanged;
             header.Controls.Add(languageSelector);
+            languageSelector.SelectedIndexChanged += LanguageChanged;
+            header.Resize += delegate { languageSelector.Location = new Point(Math.Max(20, header.ClientSize.Width - languageSelector.Width - 26), 22); };
+            languageSelector.Location = new Point(Math.Max(20, header.ClientSize.Width - languageSelector.Width - 26), 22);
 
-            aiButton = new Button();
-            aiButton.Text = Localization.Get(language, "ContinueChatGPT");
-            aiButton.Size = new Size(190, 32);
-            aiButton.Location = new Point(590, 58);
-            aiButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            aiButton.Click += AiButtonClicked;
-            header.Controls.Add(aiButton);
+            FlowLayoutPanel tools = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 48, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Padding = new Padding(0, 5, 0, 7), BackColor = Color.White };
+            header.Controls.Add(tools);
 
-            aiSettingsButton = new Button();
-            aiSettingsButton.Text = Localization.Get(language, "AISettings");
-            aiSettingsButton.Size = new Size(150, 32);
-            aiSettingsButton.Location = new Point(640, 14);
-            aiSettingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            aiSettingsButton.Click += AiSettingsClicked;
-            header.Controls.Add(aiSettingsButton);
-
-            disconnectAiButton = new Button();
-            disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
-            disconnectAiButton.Size = new Size(130, 32);
-            disconnectAiButton.Location = new Point(790, 58);
-            disconnectAiButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            disconnectAiButton.Click += DisconnectAiClicked;
-            header.Controls.Add(disconnectAiButton);
-
-            startStopButton = new Button();
-            startStopButton.Text = Localization.Get(language, "Start");
-            startStopButton.Size = new Size(190, 36);
-            startStopButton.Location = new Point(20, 56);
-            startStopButton.BackColor = Color.FromArgb(23, 112, 214);
-            startStopButton.ForeColor = Color.White;
-            startStopButton.FlatStyle = FlatStyle.Flat;
-            startStopButton.Click += StartStopClicked;
-            header.Controls.Add(startStopButton);
-
-            statusLabel = new Label();
-            statusLabel.Text = Localization.Get(language, "Stopped");
-            statusLabel.AutoSize = false;
-            statusLabel.Size = new Size(150, 22);
-            statusLabel.Location = new Point(230, 66);
-            statusLabel.Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold);
-            statusLabel.AutoEllipsis = true;
-            header.Controls.Add(statusLabel);
-
-            aiStatusLabel = new Label();
-            aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
-            aiStatusLabel.AutoSize = false;
-            aiStatusLabel.Size = new Size(185, 22);
-            aiStatusLabel.Location = new Point(390, 68);
-            aiStatusLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-            aiStatusLabel.Font = new Font("Segoe UI", 8F);
-            aiStatusLabel.AutoEllipsis = true;
-            header.Controls.Add(aiStatusLabel);
-
-            openLogsButton = new Button();
-            openLogsButton.Text = Localization.Get(language, "OpenLogs");
-            openLogsButton.Size = new Size(130, 32);
-            openLogsButton.Location = new Point(960, 14);
-            openLogsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            openLogsButton.Click += OpenLogsClicked;
-            header.Controls.Add(openLogsButton);
-
-            copyReportButton = new Button();
-            copyReportButton.Text = Localization.Get(language, "CopyReport");
-            copyReportButton.Size = new Size(150, 32);
-            copyReportButton.Location = new Point(800, 14);
-            copyReportButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            copyReportButton.Click += CopyReportClicked;
-            header.Controls.Add(copyReportButton);
-
-            routeTraceButton = new Button();
-            routeTraceButton.Text = Localization.Get(language, "RouteTraceButton");
-            routeTraceButton.Size = new Size(160, 32);
-            routeTraceButton.Location = new Point(460, 14);
-            routeTraceButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            routeTraceButton = CreateToolbarButton(Localization.Get(language, "RouteTraceButton"), 132);
             routeTraceButton.Click += RouteTraceClicked;
-            header.Controls.Add(routeTraceButton);
+            tools.Controls.Add(routeTraceButton);
+            openLogsButton = CreateToolbarButton(Localization.Get(language, "OpenLogs"), 118);
+            openLogsButton.Click += OpenLogsClicked;
+            tools.Controls.Add(openLogsButton);
+            copyReportButton = CreateToolbarButton(Localization.Get(language, "CopyReport"), 132);
+            copyReportButton.Click += CopyReportClicked;
+            tools.Controls.Add(copyReportButton);
+            aiSettingsButton = CreateToolbarButton(Localization.Get(language, "AISettings"), 130);
+            aiSettingsButton.Click += AiSettingsClicked;
+            tools.Controls.Add(aiSettingsButton);
+            aiButton = CreateToolbarButton(Localization.Get(language, "ContinueChatGPT"), 184);
+            aiButton.Click += AiButtonClicked;
+            tools.Controls.Add(aiButton);
+            disconnectAiButton = CreateToolbarButton(Localization.Get(language, "DisconnectChatGPT"), 142);
+            disconnectAiButton.Click += DisconnectAiClicked;
+            tools.Controls.Add(disconnectAiButton);
+            aiStatusLabel = new Label { AutoSize = false, Size = new Size(240, 30), TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 8.5F), ForeColor = Color.FromArgb(111, 118, 128), Margin = new Padding(6, 4, 0, 0), AutoEllipsis = true };
+            tools.Controls.Add(aiStatusLabel);
 
-            FlowLayoutPanel metrics = new FlowLayoutPanel();
-            metrics.Location = new Point(20, 100);
-            metrics.Size = new Size(1000, 24);
-            metrics.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-            metrics.WrapContents = false;
-            header.Controls.Add(metrics);
+            Panel navigation = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.White, Padding = new Padding(20, 4, 20, 0) };
+            Controls.Add(navigation);
+            viewTitle = new Label { Text = language == AppLanguage.Romanian ? "Monitor" : "Monitor", AutoSize = true, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = Color.FromArgb(112, 118, 128), Location = new Point(26, 14) };
+            navigation.Controls.Add(viewTitle);
+            monitorViewButton = CreateNavigationButton(language == AppLanguage.Romanian ? "Prezentare" : "Overview");
+            monitorViewButton.Location = new Point(128, 6);
+            monitorViewButton.Click += delegate { ShowMonitorView(); };
+            navigation.Controls.Add(monitorViewButton);
+            reportViewButton = CreateNavigationButton(language == AppLanguage.Romanian ? "Diagnostic" : "Diagnosis");
+            reportViewButton.Location = new Point(238, 6);
+            reportViewButton.Click += delegate { ShowReportView(); };
+            navigation.Controls.Add(reportViewButton);
 
-            wifiLabel = MakeMetric("Wi-Fi: n/a", metrics);
-            signalLabel = MakeMetric(Localization.Get(language, "MetricSignal") + ": n/a", metrics);
-            gatewayLabel = MakeMetric("Gateway: n/a", metrics);
-            internetLabel = MakeMetric("Internet: n/a", metrics);
-            dnsLabel = MakeMetric("DNS: n/a", metrics);
-            downloadLabel = MakeMetric(Localization.Get(language, "MetricDownload") + ": n/a", metrics);
-            uploadLabel = MakeMetric(Localization.Get(language, "MetricUpload") + ": n/a", metrics);
+            footerLabel = new Label { Text = Localization.Get(language, "Footer"), Dock = DockStyle.Bottom, Height = 28, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(26, 0, 0, 0), ForeColor = Color.FromArgb(112, 118, 128), BackColor = Color.White, Font = new Font("Segoe UI", 8F) };
+            Controls.Add(footerLabel);
 
-            SplitContainer split = new SplitContainer();
-            split.Dock = DockStyle.Fill;
-            split.Orientation = Orientation.Horizontal;
-            split.SplitterDistance = 390;
-            split.Panel1MinSize = 240;
-            split.Panel2MinSize = 140;
-            Controls.Add(split);
-            split.BringToFront();
+            viewHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.FromArgb(246, 247, 249) };
+            Controls.Add(viewHost);
+            viewHost.BringToFront();
 
-            grid = new DataGridView();
-            grid.Dock = DockStyle.Fill;
-            grid.ReadOnly = true;
-            grid.AllowUserToAddRows = false;
-            grid.AllowUserToDeleteRows = false;
-            grid.AllowUserToResizeRows = false;
-            grid.RowHeadersVisible = false;
-            grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-            grid.BackgroundColor = Color.White;
+            monitorPage = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.FromArgb(246, 247, 249) };
+            reportPage = new Panel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.FromArgb(246, 247, 249), Visible = false };
+            viewHost.Controls.Add(monitorPage);
+            viewHost.Controls.Add(reportPage);
+
+            monitorStack = new Panel { Location = new Point(24, 18), Height = 830, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.Transparent };
+            monitorPage.Controls.Add(monitorStack);
+            monitorPage.Resize += delegate { monitorStack.Width = Math.Max(500, monitorPage.ClientSize.Width - 48 - (monitorPage.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0)); };
+            monitorStack.Width = ClientSize.Width - 60;
+
+            SoftSurfacePanel hero = new SoftSurfacePanel { Location = new Point(0, 0), Size = new Size(monitorStack.Width, 144), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(24) };
+            monitorStack.Controls.Add(hero);
+            Label heroEyebrow = new Label { Text = language == AppLanguage.Romanian ? "STAREA CONEXIUNII" : "CONNECTION STATUS", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(24, 19) };
+            hero.Controls.Add(heroEyebrow);
+            statusLabel = new Label { Text = Localization.Get(language, "Stopped"), AutoSize = true, Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), ForeColor = Color.FromArgb(30, 35, 43), Location = new Point(24, 43), AutoEllipsis = true };
+            hero.Controls.Add(statusLabel);
+            overviewSummary = new Label { Text = language == AppLanguage.Romanian ? "Pornește monitorizarea când apare problema. Diagnosticul local nu necesită cont sau cheie AI." : "Start monitoring when the issue happens. Local diagnosis needs no account or AI key.", Location = new Point(26, 82), Size = new Size(680, 42), Font = new Font("Segoe UI", 9.5F), ForeColor = Color.FromArgb(102, 110, 121), AutoEllipsis = true };
+            hero.Controls.Add(overviewSummary);
+            startStopButton = CreatePrimaryButton(Localization.Get(language, "Start"), 192, 42);
+            startStopButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            startStopButton.Click += StartStopClicked;
+            hero.Controls.Add(startStopButton);
+            hero.Resize += delegate { startStopButton.Location = new Point(Math.Max(24, hero.ClientSize.Width - startStopButton.Width - 24), 53); overviewSummary.Width = Math.Max(300, hero.ClientSize.Width - startStopButton.Width - 78); };
+            startStopButton.Location = new Point(Math.Max(24, hero.ClientSize.Width - startStopButton.Width - 24), 53);
+
+            SoftSurfacePanel metricSurface = new SoftSurfacePanel { Location = new Point(0, 158), Size = new Size(monitorStack.Width, 164), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(18) };
+            monitorStack.Controls.Add(metricSurface);
+            Label metricHeading = new Label { Text = language == AppLanguage.Romanian ? "VERIFICĂRI" : "NETWORK CHECKS", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(20, 13) };
+            metricSurface.Controls.Add(metricHeading);
+            metricsLayout = new TableLayoutPanel { Location = new Point(14, 36), Size = new Size(metricSurface.Width - 28, 114), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ColumnCount = 4, RowCount = 2, BackColor = Color.White, Padding = new Padding(0) };
+            metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
+            metricsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            metricsLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 50F));
+            metricSurface.Controls.Add(metricsLayout);
+            metricSurface.Resize += delegate { metricsLayout.Width = Math.Max(400, metricSurface.ClientSize.Width - 28); };
+
+            wifiTitle = AddMetricCell(metricsLayout, 0, 0, language == AppLanguage.Romanian ? "Wi-Fi" : "Wi-Fi", out wifiLabel);
+            signalTitle = AddMetricCell(metricsLayout, 1, 0, Localization.Get(language, "MetricSignal"), out signalLabel);
+            gatewayTitle = AddMetricCell(metricsLayout, 2, 0, language == AppLanguage.Romanian ? "Gateway" : "Gateway", out gatewayLabel);
+            internetTitle = AddMetricCell(metricsLayout, 3, 0, language == AppLanguage.Romanian ? "Internet" : "Internet", out internetLabel);
+            dnsTitle = AddMetricCell(metricsLayout, 0, 1, language == AppLanguage.Romanian ? "DNS" : "DNS", out dnsLabel);
+            downloadTitle = AddMetricCell(metricsLayout, 1, 1, Localization.Get(language, "MetricDownload"), out downloadLabel);
+            uploadTitle = AddMetricCell(metricsLayout, 2, 1, Localization.Get(language, "MetricUpload"), out uploadLabel);
+            Label metricNote = new Label { Text = language == AppLanguage.Romanian ? "Probe IPv4/IPv6 și HTTPS independente" : "Independent IPv4/IPv6 and HTTPS probes", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(111, 118, 128), Font = new Font("Segoe UI", 8F), Padding = new Padding(12, 0, 2, 0) };
+            metricsLayout.Controls.Add(metricNote, 3, 1);
+
+            SoftSurfacePanel chartSurface = new SoftSurfacePanel { Location = new Point(0, 326), Size = new Size(monitorStack.Width, 258), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(12) };
+            monitorStack.Controls.Add(chartSurface);
+            latencyChart = new LatencyChartPanel { Location = new Point(10, 10), Size = new Size(chartSurface.Width - 20, 238), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Language = language, BackColor = Color.White };
+            chartSurface.Controls.Add(latencyChart);
+            chartSurface.Resize += delegate { latencyChart.Width = Math.Max(300, chartSurface.ClientSize.Width - 20); latencyChart.Height = Math.Max(160, chartSurface.ClientSize.Height - 20); };
+
+            SoftSurfacePanel activitySurface = new SoftSurfacePanel { Location = new Point(0, 598), Size = new Size(monitorStack.Width, 218), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(16) };
+            monitorStack.Controls.Add(activitySurface);
+            Label activityTitle = new Label { Text = language == AppLanguage.Romanian ? "ACTIVITATE RECENTĂ" : "RECENT ACTIVITY", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(18, 12) };
+            activitySurface.Controls.Add(activityTitle);
+            grid = new DataGridView { Location = new Point(12, 36), Size = new Size(activitySurface.Width - 24, 170), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, BackgroundColor = Color.White, BorderStyle = BorderStyle.None, CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Color.FromArgb(239, 241, 244), EnableHeadersVisualStyles = false };
+            grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(248, 249, 251);
+            grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.FromArgb(97, 105, 116);
+            grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);
+            grid.DefaultCellStyle.BackColor = Color.White;
+            grid.DefaultCellStyle.ForeColor = Color.FromArgb(42, 48, 58);
+            grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(232, 241, 253);
+            grid.DefaultCellStyle.SelectionForeColor = Color.FromArgb(32, 44, 61);
+            grid.RowTemplate.Height = 29;
             grid.Columns.Add("time", Localization.Get(language, "Time"));
             grid.Columns.Add("wifi", "Wi-Fi");
             grid.Columns.Add("signal", Localization.Get(language, "GridSignal"));
             grid.Columns.Add("gateway", "Gateway");
             grid.Columns.Add("internet", "Internet");
             grid.Columns.Add("targets", Localization.Get(language, "GridTargets"));
-            grid.Columns.Add("dns", "DNS");
+            grid.Columns.Add("dns", Localization.Get(language, "GridDNS"));
             grid.Columns.Add("state", Localization.Get(language, "State"));
             grid.Columns.Add("events", Localization.Get(language, "Events"));
-            grid.Columns[0].FillWeight = 125;
-            grid.Columns[8].FillWeight = 180;
-            split.Panel1.Controls.Add(grid);
+            grid.Columns[0].FillWeight = 65;
+            grid.Columns[1].FillWeight = 70;
+            grid.Columns[2].FillWeight = 55;
+            grid.Columns[3].FillWeight = 72;
+            grid.Columns[4].FillWeight = 100;
+            grid.Columns[5].FillWeight = 100;
+            grid.Columns[6].FillWeight = 62;
+            grid.Columns[7].FillWeight = 62;
+            grid.Columns[8].FillWeight = 130;
+            activitySurface.Controls.Add(grid);
+            activitySurface.Resize += delegate { grid.Width = Math.Max(400, activitySurface.ClientSize.Width - 24); grid.Height = Math.Max(100, activitySurface.ClientSize.Height - 48); };
 
-            latencyChart = new LatencyChartPanel();
-            latencyChart.Dock = DockStyle.Top;
-            latencyChart.Height = 150;
-            latencyChart.Language = language;
-            split.Panel1.Controls.Add(latencyChart);
-
-            diagnosisGroup = new GroupBox();
-            diagnosisGroup.Text = Localization.Get(language, "DiagnosisGroup");
-            diagnosisGroup.Dock = DockStyle.Fill;
-            diagnosisGroup.Padding = new Padding(8);
-            split.Panel2.Controls.Add(diagnosisGroup);
-
-            diagnosisBox = new TextBox();
-            diagnosisBox.Multiline = true;
-            diagnosisBox.ReadOnly = true;
-            diagnosisBox.ScrollBars = ScrollBars.Vertical;
-            diagnosisBox.Dock = DockStyle.Fill;
-            diagnosisBox.Font = new Font("Consolas", 9F);
-            diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Localization.Get(language, "AIDataNotice");
+            reportEyebrow = new Label { Text = language == AppLanguage.Romanian ? "RAPORTUL SESIUNII" : "SESSION REPORT", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(28, 24) };
+            reportPage.Controls.Add(reportEyebrow);
+            reportIntro = new Label { Text = language == AppLanguage.Romanian ? "Constatări și pași următori" : "Findings and next steps", AutoSize = true, Font = new Font("Segoe UI Semibold", 21F, FontStyle.Bold), ForeColor = Color.FromArgb(28, 31, 36), Location = new Point(28, 45) };
+            reportPage.Controls.Add(reportIntro);
+            diagnosisGroup = new SoftSurfacePanel { Location = new Point(24, 104), Size = new Size(reportPage.ClientSize.Width - 48, 640), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(20) };
+            reportPage.Controls.Add(diagnosisGroup);
+            diagnosisHeading = new Label { Text = language == AppLanguage.Romanian ? "DOVEZI ȘI PAȘI URMĂTORI" : "EVIDENCE & NEXT STEPS", Location = new Point(24, 20), Size = new Size(600, 22), Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold), ForeColor = Color.FromArgb(94, 103, 116), AutoEllipsis = true };
+            diagnosisGroup.Controls.Add(diagnosisHeading);
+            diagnosisBox = new TextBox { Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Location = new Point(22, 52), Size = new Size(diagnosisGroup.ClientSize.Width - 44, diagnosisGroup.ClientSize.Height - 74), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right, BorderStyle = BorderStyle.None, Font = new Font("Segoe UI", 10F), BackColor = Color.White, ForeColor = Color.FromArgb(43, 49, 59), Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Environment.NewLine + Localization.Get(language, "AIDataNotice") };
             diagnosisGroup.Controls.Add(diagnosisBox);
+            reportPage.Resize += delegate { diagnosisGroup.Width = Math.Max(600, reportPage.ClientSize.Width - 48); };
 
-            footerLabel = new Label();
             footerLabel.Text = Localization.Get(language, "Footer");
-            footerLabel.Dock = DockStyle.Bottom;
-            footerLabel.Height = 24;
-            footerLabel.TextAlign = ContentAlignment.MiddleLeft;
-            footerLabel.Padding = new Padding(10, 0, 0, 0);
-            Controls.Add(footerLabel);
-            footerLabel.BringToFront();
-
+            aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
+            disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
             FormClosing += MainFormClosing;
             ApplyLanguage();
+            ShowMonitorView();
         }
 
         private void LanguageChanged(object sender, EventArgs e)
@@ -1704,6 +1747,7 @@ namespace NetworkMonitorApp
             Text = Localization.Get(language, "AppTitle");
             headingLabel.Text = Localization.Get(language, "Heading");
             startStopButton.Text = Localization.Get(language, monitoring ? "Stop" : (samples.Count > 0 ? "Restart" : "Start"));
+            startStopButton.BackColor = monitoring ? Color.FromArgb(225, 85, 78) : Color.FromArgb(10, 110, 235);
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
             copyReportButton.Text = Localization.Get(language, "CopyReport");
             routeTraceButton.Text = Localization.Get(language, "RouteTraceButton");
@@ -1713,15 +1757,26 @@ namespace NetworkMonitorApp
             aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
             disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
             statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
-            wifiLabel.Text = Localization.Get(language, "MetricWifi") + ": " + Localization.Get(language, "NoValue");
-            signalLabel.Text = Localization.Get(language, "MetricSignal") + ": " + Localization.Get(language, "NoValue");
-            gatewayLabel.Text = Localization.Get(language, "MetricGateway") + ": " + Localization.Get(language, "NoValue");
-            internetLabel.Text = Localization.Get(language, "MetricInternet") + ": " + Localization.Get(language, "NoValue");
-            dnsLabel.Text = Localization.Get(language, "MetricDns") + ": " + Localization.Get(language, "NoValue");
-            downloadLabel.Text = Localization.Get(language, "MetricDownload") + ": " + Localization.Get(language, "NoValue");
-            uploadLabel.Text = Localization.Get(language, "MetricUpload") + ": " + Localization.Get(language, "NoValue");
-            diagnosisGroup.Text = Localization.Get(language, "DiagnosisGroup");
+            SetMetricTitle(wifiTitle, language == AppLanguage.Romanian ? "Wi-Fi" : "Wi-Fi");
+            SetMetricTitle(signalTitle, Localization.Get(language, "MetricSignal"));
+            SetMetricTitle(gatewayTitle, language == AppLanguage.Romanian ? "Gateway" : "Gateway");
+            SetMetricTitle(internetTitle, language == AppLanguage.Romanian ? "Internet" : "Internet");
+            SetMetricTitle(dnsTitle, language == AppLanguage.Romanian ? "DNS" : "DNS");
+            SetMetricTitle(downloadTitle, Localization.Get(language, "MetricDownload"));
+            SetMetricTitle(uploadTitle, Localization.Get(language, "MetricUpload"));
+            viewTitle.Text = language == AppLanguage.Romanian ? "MONITORIZARE" : "MONITORING";
+            monitorViewButton.Text = language == AppLanguage.Romanian ? "Prezentare" : "Overview";
+            reportViewButton.Text = language == AppLanguage.Romanian ? "Diagnostic" : "Diagnosis";
+            reportEyebrow.Text = language == AppLanguage.Romanian ? "RAPORTUL SESIUNII" : "SESSION REPORT";
+            reportIntro.Text = language == AppLanguage.Romanian ? "Constatări și pași următori" : "Findings and next steps";
+            overviewSummary.Text = monitoring
+                ? (language == AppLanguage.Romanian ? "Monitorizarea rulează. Las-o activă până când apare sau trece problema." : "Monitoring is running. Leave it active until the issue appears or passes.")
+                : samples.Count > 0
+                    ? (language == AppLanguage.Romanian ? "Sesiune oprită. Deschide diagnosticul pentru dovezi și pașii următori." : "Session stopped. Open Diagnosis for evidence and next steps.")
+                    : (language == AppLanguage.Romanian ? "Pornește monitorizarea când apare problema. Diagnosticul local nu necesită cont sau cheie AI." : "Start monitoring when the issue happens. Local diagnosis needs no account or AI key.");
+            diagnosisHeading.Text = language == AppLanguage.Romanian ? "DOVEZI ȘI PAȘI URMĂTORI" : "EVIDENCE & NEXT STEPS";
             footerLabel.Text = Localization.Get(language, "Footer");
+            latencyChart.Language = language;
             grid.Columns[0].HeaderText = Localization.Get(language, "Time");
             grid.Columns[1].HeaderText = Localization.Get(language, "GridWiFi");
             grid.Columns[2].HeaderText = Localization.Get(language, "GridSignal");
@@ -1731,24 +1786,113 @@ namespace NetworkMonitorApp
             grid.Columns[6].HeaderText = Localization.Get(language, "GridDNS");
             grid.Columns[7].HeaderText = Localization.Get(language, "State");
             grid.Columns[8].HeaderText = Localization.Get(language, "Events");
-            if (samples.Count == 0) diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Localization.Get(language, "AIDataNotice");
-            else if (!monitoring)
+            if (samples.Count == 0)
+            {
+                ResetMetrics();
+                diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Environment.NewLine + Localization.Get(language, "AIDataNotice");
+            }
+            else
             {
                 List<Sample> copy;
                 lock (samplesGate) copy = new List<Sample>(samples);
-                diagnosisBox.Text = DiagnosticEngine.Analyze(copy, language) + Environment.NewLine +
+                UpdateMetricValues(copy[copy.Count - 1]);
+                if (!monitoring)
+                    diagnosisBox.Text = DiagnosticEngine.Analyze(copy, language) + Environment.NewLine + Environment.NewLine +
                     (language == AppLanguage.Romanian ? "Raport salvat local: " : "Report saved locally: ") + CsvLogger.ReportPath;
             }
         }
 
-        private static Label MakeMetric(string text, Control parent)
+        private static Button CreateToolbarButton(string text, int width)
         {
-            Label label = new Label();
-            label.Text = text;
-            label.AutoSize = true;
-            label.Margin = new Padding(0, 0, 26, 0);
-            parent.Controls.Add(label);
-            return label;
+            Button button = new Button { Text = text, Size = new Size(width, 32), Margin = new Padding(0, 0, 8, 0), FlatStyle = FlatStyle.Flat, BackColor = Color.White, ForeColor = Color.FromArgb(54, 62, 74), Font = new Font("Segoe UI", 8.5F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(239, 244, 251);
+            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(226, 237, 251);
+            return button;
+        }
+
+        private static Button CreatePrimaryButton(string text, int width, int height)
+        {
+            Button button = new Button { Text = text, Size = new Size(width, height), FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(10, 110, 235), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(8, 96, 211);
+            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(6, 82, 184);
+            return button;
+        }
+
+        private static Button CreateNavigationButton(string text)
+        {
+            Button button = new Button { Text = text, Size = new Size(102, 34), FlatStyle = FlatStyle.Flat, BackColor = Color.White, ForeColor = Color.FromArgb(89, 97, 109), Font = new Font("Segoe UI", 8.5F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            button.FlatAppearance.BorderSize = 0;
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(241, 244, 248);
+            return button;
+        }
+
+        private static Label AddMetricCell(TableLayoutPanel layout, int column, int row, string title, out Label value)
+        {
+            SoftSurfacePanel card = new SoftSurfacePanel { Dock = DockStyle.Fill, Margin = new Padding(5), CornerRadius = 10, BorderColor = Color.FromArgb(236, 238, 242), Padding = new Padding(11, 5, 8, 4) };
+            Label caption = new Label { Text = title, Dock = DockStyle.Top, Height = 20, Font = new Font("Segoe UI", 8F), ForeColor = Color.FromArgb(107, 115, 126), AutoEllipsis = true };
+            value = new Label { Text = "—", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = Color.FromArgb(38, 44, 53), AutoEllipsis = true };
+            card.Controls.Add(value);
+            card.Controls.Add(caption);
+            layout.Controls.Add(card, column, row);
+            return caption;
+        }
+
+        private static void SetMetricTitle(Label label, string text)
+        {
+            if (label != null) label.Text = text;
+        }
+
+        private void ResetMetrics()
+        {
+            string noValue = Localization.Get(language, "NoValue");
+            wifiLabel.Text = noValue;
+            signalLabel.Text = noValue;
+            gatewayLabel.Text = noValue;
+            internetLabel.Text = noValue;
+            dnsLabel.Text = noValue;
+            downloadLabel.Text = noValue;
+            uploadLabel.Text = noValue;
+        }
+
+        private void UpdateMetricValues(Sample sample)
+        {
+            wifiLabel.Text = Localization.Status(language, sample.WifiState);
+            signalLabel.Text = sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) + "%" : Localization.Get(language, "NoValue");
+            gatewayLabel.Text = FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
+            internetLabel.Text = FormatInternetProbe(sample, language);
+            dnsLabel.Text = Localization.Status(language, sample.DnsStatus);
+            downloadLabel.Text = sample.DownloadMbps.HasValue ? Format(sample.DownloadMbps) + " Mbps" : Localization.Get(language, "NoValue");
+            uploadLabel.Text = sample.UploadMbps.HasValue ? Format(sample.UploadMbps) + " Mbps" : Localization.Get(language, "NoValue");
+            gatewayLabel.ForeColor = sample.GatewayLatencyMs.HasValue ? Color.FromArgb(38, 44, 53) : Color.FromArgb(111, 118, 128);
+            internetLabel.ForeColor = NetworkProbe.CountExternalSuccesses(sample) > 0 || sample.HttpsStatus == "Success" ? Color.FromArgb(35, 133, 86) : Color.FromArgb(193, 74, 67);
+            dnsLabel.ForeColor = sample.DnsStatus == "AllFailed" ? Color.FromArgb(193, 74, 67) : Color.FromArgb(38, 44, 53);
+        }
+
+        private void ShowMonitorView()
+        {
+            monitorPage.Visible = true;
+            reportPage.Visible = false;
+            monitorPage.BringToFront();
+            StyleNavigationButton(monitorViewButton, true);
+            StyleNavigationButton(reportViewButton, false);
+        }
+
+        private void ShowReportView()
+        {
+            monitorPage.Visible = false;
+            reportPage.Visible = true;
+            reportPage.BringToFront();
+            StyleNavigationButton(monitorViewButton, false);
+            StyleNavigationButton(reportViewButton, true);
+        }
+
+        private static void StyleNavigationButton(Button button, bool active)
+        {
+            button.BackColor = active ? Color.FromArgb(238, 244, 253) : Color.White;
+            button.ForeColor = active ? Color.FromArgb(19, 101, 207) : Color.FromArgb(89, 97, 109);
+            button.FlatAppearance.BorderSize = 0;
         }
 
         private void StartStopClicked(object sender, EventArgs e)
@@ -1826,11 +1970,16 @@ namespace NetworkMonitorApp
             grid.Rows.Clear();
             latencyChart.SetSamples(new List<Sample>());
             diagnosisBox.Clear();
+            ResetMetrics();
             nextDnsCheck = DateTimeOffset.MinValue;
             monitoring = true;
             startStopButton.Text = Localization.Get(language, "Stop");
-            startStopButton.BackColor = Color.FromArgb(190, 55, 45);
+            startStopButton.BackColor = Color.FromArgb(225, 85, 78);
             statusLabel.Text = Localization.Get(language, "Running");
+            overviewSummary.Text = language == AppLanguage.Romanian
+                ? "Probează gateway-ul, DNS-ul, HTTPS și ținte IPv4/IPv6. Lasă aplicația pornită cât timp observi problema."
+                : "Checking your gateway, DNS, HTTPS, and IPv4/IPv6 targets. Keep the app running while the issue occurs.";
+            ShowMonitorView();
             timer = new System.Threading.Timer(SampleTick, null, 0, 5000);
         }
 
@@ -1844,6 +1993,7 @@ namespace NetworkMonitorApp
             }
             startStopButton.Enabled = false;
             statusLabel.Text = Localization.Get(language, "Stopping");
+            overviewSummary.Text = language == AppLanguage.Romanian ? "Pregătesc raportul din măsurătorile sesiunii…" : "Preparing your session report from the captured measurements…";
 
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -1882,10 +2032,15 @@ namespace NetworkMonitorApp
                 SafeBeginInvoke(delegate
                 {
                     diagnosisBox.Text = report + Environment.NewLine + (reportLanguage == AppLanguage.Romanian ? "Raport salvat local: " : "Report saved locally: ") + CsvLogger.ReportPath;
-                    statusLabel.Text = String.Format(reportLanguage == AppLanguage.Romanian ? CultureInfo.GetCultureInfo("ro-RO") : CultureInfo.GetCultureInfo("en-US"), reportLanguage == AppLanguage.Romanian ? "Oprit - {0} esantioane analizate" : "Stopped - analyzed {0} samples", copy.Count);
+                    statusLabel.Text = reportLanguage == AppLanguage.Romanian ? "Sesiune analizată" : "Session analyzed";
+                    overviewSummary.Text = reportLanguage == AppLanguage.Romanian
+                        ? String.Format(CultureInfo.GetCultureInfo("ro-RO"), "Raport pregătit din {0} măsurători. Vezi concluzia și pașii următori.", copy.Count)
+                        : String.Format(CultureInfo.GetCultureInfo("en-US"), "Report ready from {0} samples. Review the findings and next steps.", copy.Count);
                     startStopButton.Text = Localization.Get(language, "Restart");
-                    startStopButton.BackColor = Color.FromArgb(23, 112, 214);
+                    startStopButton.BackColor = Color.FromArgb(10, 110, 235);
                     startStopButton.Enabled = true;
+                    copyReportButton.Enabled = true;
+                    ShowReportView();
                     aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
                 });
             });
@@ -1935,14 +2090,9 @@ namespace NetworkMonitorApp
 
         private void AddSampleToUi(Sample sample)
         {
-            wifiLabel.Text = Localization.Get(language, "MetricWifi") + ": " + Localization.Status(language, sample.WifiState);
-            signalLabel.Text = Localization.Get(language, "MetricSignal") + ": " + (sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) + "%" : Localization.Get(language, "NoValue"));
-            gatewayLabel.Text = Localization.Get(language, "MetricGateway") + ": " + FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
-            internetLabel.Text = Localization.Get(language, "MetricInternet") + ": " + FormatInternetProbe(sample, language);
-            dnsLabel.Text = Localization.Get(language, "MetricDns") + ": " + Localization.Status(language, sample.DnsStatus);
-            downloadLabel.Text = Localization.Get(language, "MetricDownload") + ": " + (sample.DownloadMbps.HasValue ? Format(sample.DownloadMbps) + " Mbps" : Localization.Get(language, "NoValue"));
-            uploadLabel.Text = Localization.Get(language, "MetricUpload") + ": " + (sample.UploadMbps.HasValue ? Format(sample.UploadMbps) + " Mbps" : Localization.Get(language, "NoValue"));
-            statusLabel.Text = Localization.Get(language, "Running") + " - " + (language == AppLanguage.Romanian ? "ultima proba " : "latest probe ") + sample.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
+            UpdateMetricValues(sample);
+            statusLabel.Text = ConnectivityLabel(sample.Connectivity, language);
+            overviewSummary.Text = NextStepSummary(sample, language);
 
             string gateway = FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
             string internet = FormatInternetProbe(sample, language);
@@ -1955,8 +2105,32 @@ namespace NetworkMonitorApp
             List<Sample> chartSamples;
             lock (samplesGate) chartSamples = new List<Sample>(samples);
             latencyChart.SetSamples(chartSamples);
-            if (sample.Events.Length > 0)
-                diagnosisBox.Text = (language == AppLanguage.Romanian ? "Eveniment observat: " : "Event observed: ") + String.Join("; ", sample.Events.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(delegate(string code) { return Localization.Event(language, code); }).ToArray()) + Environment.NewLine + (language == AppLanguage.Romanian ? "Lasa monitorul pornit pana trece problema; diagnosticul complet apare la oprire." : "Keep monitoring until the issue passes; the full diagnosis appears when you stop.");
+        }
+
+        private static string ConnectivityLabel(string connectivity, AppLanguage language)
+        {
+            bool ro = language == AppLanguage.Romanian;
+            if (connectivity == "OutageSuspected") return ro ? "Conexiune întreruptă — verifică traseul" : "Connection interruption suspected";
+            if (connectivity == "Degraded") return ro ? "Conexiune cu probleme" : "Connection needs attention";
+            if (connectivity == "Partial") return ro ? "Răspuns parțial — verificările diferă" : "Partial reachability — checks disagree";
+            return ro ? "Conexiune disponibilă" : "Connection available";
+        }
+
+        private static string NextStepSummary(Sample sample, AppLanguage language)
+        {
+            bool ro = language == AppLanguage.Romanian;
+            string events = sample.Events ?? "";
+            if (sample.Connectivity == "OutageSuspected")
+                return ro ? "Nu au răspuns probele externe și HTTPS. Verifică dacă dispozitivele conectate la aceeași rețea au aceeași problemă." : "External targets and HTTPS did not respond. Check whether other devices on this network have the same issue.";
+            if (sample.CaptivePortalSuspected)
+                return ro ? "Răspunsurile HTTPS sugerează o redirecționare sau interceptare. Verifică autentificarea în rețea; indiciul nu confirmă un portal captiv." : "HTTPS responses suggest redirection or interception. Check network sign-in; this clue does not confirm a captive portal.";
+            if (events.IndexOf("DNSFailure", StringComparison.Ordinal) >= 0)
+                return ro ? "DNS nu a rezolvat toate numele de test. Dacă probele către IP răspund, verifică DNS-ul sau VPN-ul." : "DNS did not resolve every test name. If IP probes respond, check DNS or VPN settings.";
+            if (sample.Connectivity == "Partial")
+                return ro ? "Unele verificări răspund, altele nu. Lasă monitorul pornit pentru a vedea dacă diferența se repetă." : "Some checks respond and others do not. Keep monitoring to see whether the difference repeats.";
+            if (sample.Connectivity == "Degraded")
+                return ro ? "A apărut un indiciu de degradare. Păstrează monitorizarea până când problema se reproduce sau trece." : "A degradation clue was observed. Keep monitoring until the issue repeats or passes.";
+            return ro ? "Probe independente către Internet au răspuns. Continuă monitorizarea dacă problema apare intermitent." : "Independent Internet checks responded. Keep monitoring if the issue is intermittent.";
         }
 
         private static string FormatProbe(double? latency, string status, AppLanguage language)
@@ -2024,28 +2198,42 @@ namespace NetworkMonitorApp
             {
                 dialog.Text = Localization.Get(language, "RouteTraceButton") + " - " + RouteTrace.SelectedTarget;
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.Size = new Size(850, 560);
-                dialog.MinimumSize = new Size(650, 400);
+                dialog.Size = new Size(900, 620);
+                dialog.MinimumSize = new Size(700, 460);
+                dialog.BackColor = Color.FromArgb(246, 247, 249);
+                dialog.Font = new Font("Segoe UI", 9F);
                 Label note = new Label();
                 note.Dock = DockStyle.Top;
-                note.Height = 48;
+                note.Height = 76;
                 note.Text = language == AppLanguage.Romanian
                     ? "Rezultatul ramane doar pe acest calculator si nu este salvat sau trimis. Asteriscurile inseamna ca un router nu a raspuns; nu dovedesc o defectiune."
                     : "The result stays on this PC and is not saved or sent. Asterisks mean a router did not reply; they do not prove a fault.";
-                note.Padding = new Padding(10, 8, 10, 4);
+                note.Padding = new Padding(22, 16, 22, 12);
+                note.ForeColor = Color.FromArgb(81, 91, 104);
+                note.BackColor = Color.White;
                 TextBox output = new TextBox();
                 output.Dock = DockStyle.Fill;
                 output.Multiline = true;
                 output.ReadOnly = true;
                 output.ScrollBars = ScrollBars.Both;
                 output.WordWrap = false;
-                output.Font = new Font("Consolas", 9F);
+                output.Font = new Font("Cascadia Mono", 9F);
+                output.BackColor = Color.White;
+                output.ForeColor = Color.FromArgb(43, 49, 59);
+                output.BorderStyle = BorderStyle.None;
+                output.Margin = new Padding(18);
                 output.Text = result;
                 Button close = new Button();
-                close.Text = language == AppLanguage.Romanian ? "Inchide" : "Close";
+                close.Text = language == AppLanguage.Romanian ? "Închide" : "Close";
                 close.DialogResult = DialogResult.OK;
                 close.Dock = DockStyle.Bottom;
-                close.Height = 34;
+                close.Height = 44;
+                close.FlatStyle = FlatStyle.Flat;
+                close.FlatAppearance.BorderSize = 0;
+                close.BackColor = Color.FromArgb(10, 110, 235);
+                close.ForeColor = Color.White;
+                close.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
+                close.Cursor = Cursors.Hand;
                 dialog.Controls.Add(output);
                 dialog.Controls.Add(close);
                 dialog.Controls.Add(note);

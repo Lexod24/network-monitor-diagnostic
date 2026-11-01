@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -235,36 +236,48 @@ namespace NetworkMonitorApp
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
-            ClientSize = new System.Drawing.Size(500, 285);
+            ClientSize = new Size(560, 462);
+            BackColor = Color.FromArgb(246, 247, 249);
+            Font = new Font("Segoe UI", 9F);
 
-            Label providerLabel = MakeLabel(ro ? "Furnizor" : "Provider", 18, 20);
-            Controls.Add(providerLabel);
-            provider = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new System.Drawing.Point(180, 18), Width = 290 };
+            Label eyebrow = new Label { Text = ro ? "PREFERINȚE" : "PREFERENCES", Location = new Point(28, 22), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(100, 110, 123) };
+            Label title = new Label { Text = ro ? "Conectează un furnizor AI" : "Connect an AI provider", Location = new Point(26, 42), AutoSize = true, Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), ForeColor = Color.FromArgb(28, 34, 43) };
+            Label subtitle = new Label { Text = ro ? "AI-ul este opțional. Diagnosticul local funcționează și fără cont sau cheie." : "AI is optional. Local diagnosis works without an account or API key.", Location = new Point(28, 78), Size = new Size(500, 36), ForeColor = Color.FromArgb(102, 111, 123), AutoEllipsis = true };
+            Controls.Add(eyebrow); Controls.Add(title); Controls.Add(subtitle);
+
+            Panel card = new Panel { Location = new Point(20, 126), Size = new Size(520, 258), BackColor = Color.White, Padding = new Padding(20) };
+            card.Paint += delegate(object sender, PaintEventArgs e) { using (Pen pen = new Pen(Color.FromArgb(226, 230, 235))) e.Graphics.DrawRectangle(pen, 0, 0, card.Width - 1, card.Height - 1); };
+            Controls.Add(card);
+            Label providerLabel = MakeLabel(ro ? "Furnizor" : "Provider", 20, 18);
+            card.Controls.Add(providerLabel);
+            provider = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(160, 16), Width = 318, Height = 28, Font = new Font("Segoe UI", 9F), IntegralHeight = false };
             provider.Items.AddRange(ro
                 ? new object[] { "Dezactivat (doar diagnostic local)", "Ollama (local; fara cont/cheie)", "Gemini API (cheia ta)", "Groq API (cheia ta)" }
                 : new object[] { "Disabled (local diagnosis only)", "Ollama (local; no account/key)", "Gemini API (your key)", "Groq API (your key)" });
             provider.SelectedIndex = (int)settings.Provider;
             provider.SelectedIndexChanged += ProviderChanged;
-            Controls.Add(provider);
+            card.Controls.Add(provider);
 
-            Controls.Add(MakeLabel(ro ? "Model" : "Model", 18, 62));
-            model = new TextBox { Location = new System.Drawing.Point(180, 60), Width = 290, Text = settings.Model ?? "" };
-            Controls.Add(model);
-            Controls.Add(MakeLabel(ro ? "Cheie API" : "API key", 18, 104));
-            apiKey = new TextBox { Location = new System.Drawing.Point(180, 102), Width = 290, UseSystemPasswordChar = true, Text = settings.ApiKey ?? "" };
-            Controls.Add(apiKey);
+            card.Controls.Add(MakeLabel(ro ? "Model" : "Model", 20, 62));
+            model = new TextBox { Location = new Point(160, 60), Width = 318, Text = settings.Model ?? "", Font = new Font("Segoe UI", 9F), BorderStyle = BorderStyle.FixedSingle };
+            card.Controls.Add(model);
+            card.Controls.Add(MakeLabel(ro ? "Cheie API" : "API key", 20, 106));
+            apiKey = new TextBox { Location = new Point(160, 104), Width = 318, UseSystemPasswordChar = true, Text = settings.ApiKey ?? "", Font = new Font("Segoe UI", 9F), BorderStyle = BorderStyle.FixedSingle };
+            card.Controls.Add(apiKey);
 
-            hint = new Label { Location = new System.Drawing.Point(18, 142), Size = new System.Drawing.Size(452, 60), AutoEllipsis = true };
-            Controls.Add(hint);
-            Button save = new Button { Text = ro ? "Salveaza" : "Save", Location = new System.Drawing.Point(270, 225), Size = new System.Drawing.Size(95, 32), DialogResult = DialogResult.OK };
+            hint = new Label { Location = new Point(20, 148), Size = new Size(458, 80), AutoEllipsis = true, ForeColor = Color.FromArgb(91, 101, 114), Font = new Font("Segoe UI", 8.5F) };
+            card.Controls.Add(hint);
+            Button save = new Button { Text = ro ? "Salvează" : "Save", Location = new Point(322, 404), Size = new Size(104, 36), DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(10, 110, 235), ForeColor = Color.White, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            save.FlatAppearance.BorderSize = 0;
             save.Click += SaveClicked;
-            Button cancel = new Button { Text = ro ? "Anuleaza" : "Cancel", Location = new System.Drawing.Point(375, 225), Size = new System.Drawing.Size(95, 32), DialogResult = DialogResult.Cancel };
+            Button cancel = new Button { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 404), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat, BackColor = Color.White, ForeColor = Color.FromArgb(63, 71, 83), Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
+            cancel.FlatAppearance.BorderColor = Color.FromArgb(221, 225, 231);
             Controls.Add(save); Controls.Add(cancel);
             AcceptButton = save; CancelButton = cancel;
             ProviderChanged(null, EventArgs.Empty);
         }
 
-        private static Label MakeLabel(string text, int x, int y) { return new Label { Text = text, Location = new System.Drawing.Point(x, y + 3), AutoSize = true }; }
+        private static Label MakeLabel(string text, int x, int y) { return new Label { Text = text, Location = new Point(x, y + 4), AutoSize = true, Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold), ForeColor = Color.FromArgb(62, 70, 82) }; }
 
         private void ProviderChanged(object sender, EventArgs e)
         {
