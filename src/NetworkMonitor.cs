@@ -795,10 +795,10 @@ namespace NetworkMonitorApp
             }
         }
 
-        internal static string Run()
+        internal static string Run(AppLanguage language)
         {
             string executable = Path.Combine(Environment.SystemDirectory, "tracert.exe");
-            if (!File.Exists(executable)) return "Windows tracert.exe is not available.";
+            if (!File.Exists(executable)) return Localization.Get(language, "WindowsTraceUnavailable");
             bool ipv6 = SelectIpv6Route(NetworkProbe.GetBestInterfaceIndex(Target).HasValue, NetworkProbe.GetBestInterfaceIndex(Ipv6Target).HasValue);
             ProcessStartInfo info = new ProcessStartInfo(executable, BuildArguments(ipv6));
             info.UseShellExecute = false;
@@ -813,12 +813,12 @@ namespace NetworkMonitorApp
                 {
                     try { process.Kill(); } catch { }
                     try { process.WaitForExit(1000); } catch { }
-                    return "The route trace exceeded its 12-second safety limit and was stopped. Some routers do not answer traceroute probes.";
+                    return Localization.Get(language, "WindowsTraceTimeout");
                 }
                 string output = process.StandardOutput.ReadToEnd();
                 string error = process.StandardError.ReadToEnd();
                 if (String.IsNullOrWhiteSpace(output)) output = error;
-                return String.IsNullOrWhiteSpace(output) ? "No route trace output was returned." : output.Trim();
+                return String.IsNullOrWhiteSpace(output) ? Localization.Get(language, "WindowsTraceEmpty") : output.Trim();
             }
         }
     }
@@ -1696,9 +1696,9 @@ namespace NetworkMonitorApp
             b.AppendLine("Measured average sample gap: " + Format(AverageIntervalSeconds(samples), " seconds"));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Measured averages: active Wi-Fi signal {0}; gateway ICMP {1}; IPv4 ICMP {2}.", Format(signal, "%"), Format(gateway, " ms"), Format(internet, " ms")));
             b.AppendLine("Active Windows route interface: " + FormatInterfaceStats(samples, AppLanguage.English) + ". Tunnel identifies an OS tunnel-type interface; VPN products may also appear as another type. Interface indices are used only in memory.");
-            b.AppendLine("Internet targets: " + FormatInternetTargetStats(samples) + ". These independent public IP probes are logged by service name; target IPs are not stored.");
+            b.AppendLine("Internet targets: " + FormatInternetTargetStats(samples, AppLanguage.English) + ". These independent public IP probes are logged by service name; target IPs are not stored.");
             b.AppendLine("Passive traffic on the active gateway interface: average download " + Format(download, " Mbps") + "; upload " + Format(upload, " Mbps") + ". This is current device traffic, not the connection's maximum speed.");
-            b.AppendLine("Successful ICMP latency statistics: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; })) + "; IPv4 " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; })) + "; IPv6 " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.Ipv6LatencyMs; })) + ". Jitter is mean absolute change between consecutive successful samples.");
+            b.AppendLine("Successful ICMP latency statistics: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; }), AppLanguage.English) + "; IPv4 " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; }), AppLanguage.English) + "; IPv6 " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.Ipv6LatencyMs; }), AppLanguage.English) + ". Jitter is mean absolute change between consecutive successful samples.");
             b.AppendLine(FormatLoadComparison(samples, AppLanguage.English));
             b.AppendLine(); b.AppendLine("FINDINGS AND INTERPRETATION");
             int findings = 0;
@@ -1726,8 +1726,8 @@ namespace NetworkMonitorApp
             if (findings == 0) b.AppendLine("- If the problem returns, run the monitor during the issue and keep the generated CSV for comparison.");
             b.AppendLine();
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Independent HTTPS checks: {0}/{1} successful. Microsoft, Google, and Cloudflare are checked at least once per minute and sooner when fewer than two IP targets reply.", httpsSuccess, httpsAttempts));
-            b.AppendLine("HTTPS by endpoint: " + FormatEndpointStats(samples, true));
-            b.AppendLine("DNS by domain: " + FormatEndpointStats(samples, false));
+            b.AppendLine("HTTPS by endpoint: " + FormatEndpointStats(samples, true, AppLanguage.English));
+            b.AppendLine("DNS by domain: " + FormatEndpointStats(samples, false, AppLanguage.English));
             b.AppendLine("Limits: ICMP may be filtered; Windows may not expose Wi-Fi signal; a firewall or proxy may block multiple endpoints. The evidence narrows the likely area but cannot by itself prove hardware failure or ISP responsibility.");
             return b.ToString();
         }
@@ -1777,15 +1777,15 @@ namespace NetworkMonitorApp
 
             if (gatewayAttempts >= 4 && gatewayLoss >= 20.0)
                 findings.Add(String.Format(CultureInfo.InvariantCulture,
-                    "Gateway: {0:0.0}% dintre probele ICMP nu au primit raspuns ({1}/{2}). Nu este dovada directa de pierdere a traficului; unele routere filtreaza ping-ul.", gatewayLoss, gatewayFailures, gatewayAttempts));
+                    "Router: {0:0.0}% dintre probele ICMP nu au primit răspuns ({1}/{2}). Nu este dovadă directă de pierdere a traficului; unele routere filtrează ping-ul.", gatewayLoss, gatewayFailures, gatewayAttempts));
 
             if (gatewaySpikes > 0)
                 findings.Add(String.Format(CultureInfo.InvariantCulture,
-                    "Spike relativ local: {0} proba(e) catre gateway au depasit mediana recenta cu cel putin 50 ms sau 50%. Incredere medie; corelatia cu semnalul si evenimentele externe conteaza.", gatewaySpikes));
+                    "Creștere bruscă a latenței locale: {0} măsurători către router au depășit mediana recentă cu cel puțin 50 ms sau 50%. Încredere medie; contează corelarea cu semnalul și evenimentele externe.", gatewaySpikes));
 
             if (internetSpikes > 0 && gatewaySpikes == 0)
                 findings.Add(String.Format(CultureInfo.InvariantCulture,
-                    "Spike relativ IPv4: {0} proba(e) au depasit mediana recenta cu cel putin 50 ms sau 50%, fara spike simultan catre gateway. Indiciul nu identifica singur furnizorul. Incredere medie.", internetSpikes));
+                    "Creștere bruscă a latenței IPv4: {0} măsurători au depășit mediana recentă cu cel puțin 50 ms sau 50%, fără o creștere simultană către router. Indiciul nu identifică singur furnizorul. Încredere medie.", internetSpikes));
 
             if (dnsDisagreements > 0)
                 findings.Add(String.Format(CultureInfo.InvariantCulture, "DNS: raspunsuri diferite intre domeniile Microsoft, Google si Cloudflare in {0} verificare(i). O singura zona DNS poate avea o problema punctuala; nu confirma o defectiune generala DNS.", dnsDisagreements));
@@ -1812,8 +1812,8 @@ namespace NetworkMonitorApp
             {
                 bool gatewayMostlyOkay = gatewayAttempts > 0 && gatewayLoss < 20.0;
                 string likelyArea = gatewayMostlyOkay
-                    ? "Gateway-ul a raspuns in general; intreruperea pare dincolo de router sau serviciul de test."
-                    : "Verifica separat legatura Wi-Fi/gateway; probele singure nu separa sigur routerul de furnizor.";
+                    ? "Routerul a răspuns în general; întreruperea pare dincolo de router sau serviciul de test."
+                    : "Verifică separat legătura Wi-Fi/router; probele singure nu separă sigur routerul de furnizor.";
                 findings.Add(String.Format(CultureInfo.InvariantCulture,
                     "Acces Internet suspectat intrerupt: toate tintele ICMP IPv4/IPv6 si cele trei endpointuri HTTPS au esuat impreuna in {0} esantion(e). {1} Incredere medie; firewall-ul, proxy-ul, portalul captiv sau filtrarea pot afecta probele. Verifica daca alte dispozitive au aceeasi problema.", internetOutages, likelyArea));
             }
@@ -1839,12 +1839,12 @@ namespace NetworkMonitorApp
                 samples[0].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture),
                 samples[samples.Count - 1].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)));
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Esantioane: {0}; frecventa nominala: 5 secunde", samples.Count));
-            report.AppendLine("Interval mediu masurat intre esantioane: " + Format(AverageIntervalSeconds(samples), " secunde"));
-            report.AppendLine("Medii observate: semnal Wi-Fi {0}; gateway {1}; Internet {2}.".Replace("{0}", Format(averageSignal, "%")).Replace("{1}", Format(averageGateway, " ms")).Replace("{2}", Format(averageInternet, " ms")));
+            report.AppendLine("Interval mediu masurat intre esantioane: " + FormatLocalized(AverageIntervalSeconds(samples), " secunde", AppLanguage.Romanian));
+            report.AppendLine("Medii observate: semnal Wi-Fi {0}; router {1}; Internet {2}.".Replace("{0}", FormatLocalized(averageSignal, "%", AppLanguage.Romanian)).Replace("{1}", FormatLocalized(averageGateway, " ms", AppLanguage.Romanian)).Replace("{2}", FormatLocalized(averageInternet, " ms", AppLanguage.Romanian)));
             report.AppendLine("Interfata Windows folosita pentru ruta: " + FormatInterfaceStats(samples, AppLanguage.Romanian) + ". Indexul interfetei este folosit doar temporar.");
-            report.AppendLine("Tinte IP independente: " + FormatInternetTargetStats(samples) + ". Adresele IP ale tintelor nu sunt scrise in jurnal.");
-            report.AppendLine("Trafic pasiv pe interfata activa: descarcare medie " + Format(averageDownload, " Mbps") + "; incarcare " + Format(averageUpload, " Mbps") + ". Este traficul curent al calculatorului, nu viteza maxima a abonamentului.");
-            report.AppendLine("Statistici latență ICMP cu raspuns: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; })) + "; Internet " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; })) + ". Jitter = media variatiei absolute intre esantioanele reusite consecutive.");
+            report.AppendLine("Tinte IP independente: " + FormatInternetTargetStats(samples, AppLanguage.Romanian) + ". Adresele IP ale tintelor nu sunt scrise in jurnal.");
+            report.AppendLine("Trafic pasiv pe interfata activa: descarcare medie " + FormatLocalized(averageDownload, " Mbps", AppLanguage.Romanian) + "; incarcare " + FormatLocalized(averageUpload, " Mbps", AppLanguage.Romanian) + ". Este traficul curent al calculatorului, nu viteza maxima a abonamentului.");
+            report.AppendLine("Statistici latență ICMP cu răspuns: router " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; }), AppLanguage.Romanian) + "; Internet " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; }), AppLanguage.Romanian) + ". Variația este media variațiilor absolute între măsurătorile consecutive reușite.");
             report.AppendLine(FormatLoadComparison(samples, AppLanguage.Romanian));
             report.AppendLine();
             report.AppendLine("CONSTATARE SI INTERPRETARE");
@@ -1852,8 +1852,8 @@ namespace NetworkMonitorApp
                 report.AppendLine("- " + findings[i]);
             report.AppendLine();
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Verificari HTTPS independente: {0}/{1} reusite. Destinatii: Microsoft, Google si Cloudflare; acestea se testeaza cand raspund mai putin de doua tinte IP.", httpsSuccesses, httpsAttempts));
-            report.AppendLine("Rezultate HTTPS pe endpoint: " + FormatEndpointStats(samples, true));
-            report.AppendLine("Rezultate DNS pe domeniu: " + FormatEndpointStats(samples, false));
+            report.AppendLine("Rezultate HTTPS pe destinație: " + FormatEndpointStats(samples, true, AppLanguage.Romanian));
+            report.AppendLine("Rezultate DNS pe domeniu: " + FormatEndpointStats(samples, false, AppLanguage.Romanian));
             report.AppendLine("Limite: ping-ul poate fi filtrat; semnalul poate lipsi daca Windows nu-l expune; firewall-urile/proxy-urile pot bloca mai multe endpointuri. Comparatia reduce ambiguitatea, dar nu dovedeste singura defecte hardware sau vina furnizorului.");
             return report.ToString();
         }
@@ -1978,7 +1978,7 @@ namespace NetworkMonitorApp
                     : "Latency during network activity: not enough samples from both quiet and active periods. The app generates no traffic; leave it running while using the connection normally to compare periods.";
             double delta = comparison.ActiveMedianMs.Value - comparison.QuietMedianMs.Value;
             string localComparison = comparison.GatewayQuietMedianMs.HasValue && comparison.GatewayActiveMedianMs.HasValue
-                ? String.Format(CultureInfo.InvariantCulture, (ro ? " Gateway median: {0:0.0} ms linistit, {1:0.0} ms activ." : " Gateway median: {0:0.0} ms quiet, {1:0.0} ms active."), comparison.GatewayQuietMedianMs.Value, comparison.GatewayActiveMedianMs.Value)
+                ? String.Format(CultureInfo.InvariantCulture, (ro ? " Mediana routerului: {0:0.0} ms în perioade liniștite, {1:0.0} ms în perioade active." : " Gateway median: {0:0.0} ms quiet, {1:0.0} ms active."), comparison.GatewayQuietMedianMs.Value, comparison.GatewayActiveMedianMs.Value)
                 : "";
             return ro
                 ? String.Format(CultureInfo.InvariantCulture, "Comparatie observata (nu test controlat): mediana latenței ICMP IPv4 a fost {0:0.0} ms linistit ({1} probe) si {2:0.0} ms cand traficul acestui PC a depasit 1 Mbps ({3} probe), diferenta {4:+0.0;-0.0;0.0} ms.{5} Corelatia nu dovedeste bufferbloat si nu include traficul altor dispozitive.", comparison.QuietMedianMs.Value, comparison.QuietSamples, comparison.ActiveMedianMs.Value, comparison.ActiveSamples, delta, localComparison)
@@ -1992,13 +1992,15 @@ namespace NetworkMonitorApp
             return list.Average();
         }
 
-        private static string FormatLatencyStatistics(IEnumerable<double?> values)
+        private static string FormatLatencyStatistics(IEnumerable<double?> values, AppLanguage language)
         {
             LatencyStatistics stats = LatencyStatistics.Calculate(values);
-            if (stats.Count == 0) return "n/a (no successful samples)";
-            return String.Format(CultureInfo.InvariantCulture, "min {0:0.0}, median {1:0.0}, p95 {2:0.0}, max {3:0.0} ms, jitter {4}",
-                stats.Minimum.Value, stats.Median.Value, stats.P95.Value, stats.Maximum.Value,
-                stats.Jitter.HasValue ? stats.Jitter.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : "n/a");
+            if (stats.Count == 0) return Localization.Get(language, "NoValue") + " (" + Localization.Get(language, "NoSuccessfulSamples") + ")";
+            return String.Format(CultureInfo.InvariantCulture, "{0} {1:0.0}, {2} {3:0.0}, {4} {5:0.0}, {6} {7:0.0} ms, {8} {9}",
+                Localization.Get(language, "Minimum"),
+                stats.Minimum.Value, Localization.Get(language, "Median"), stats.Median.Value,
+                Localization.Get(language, "P95"), stats.P95.Value, Localization.Get(language, "Maximum"), stats.Maximum.Value, Localization.Get(language, "Jitter"),
+                stats.Jitter.HasValue ? stats.Jitter.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : Localization.Get(language, "NoValue"));
         }
 
         private static string FormatInterfaceStats(IList<Sample> samples, AppLanguage language)
@@ -2007,11 +2009,14 @@ namespace NetworkMonitorApp
             return String.Join(", ", types.Select(delegate(string type)
             {
                 int count = samples.Count(delegate(Sample sample) { return String.Equals(sample.ActiveInterfaceType ?? "Unavailable", type, StringComparison.OrdinalIgnoreCase); });
-                return type + " " + count.ToString(CultureInfo.InvariantCulture);
+                string displayType = language == AppLanguage.Romanian
+                    ? type == "Tunnel" ? "Tunel" : type == "Other" ? "Alt tip" : type == "Unavailable" ? "Indisponibil" : type
+                    : type;
+                return displayType + " " + count.ToString(CultureInfo.InvariantCulture);
             }).ToArray());
         }
 
-        private static string FormatInternetTargetStats(IList<Sample> samples)
+        private static string FormatInternetTargetStats(IList<Sample> samples, AppLanguage language)
         {
             string[] names = new string[] { "Cloudflare", "Google", "Quad9", "Cloudflare IPv6", "Google IPv6", "Quad9 IPv6" };
             List<string> formatted = new List<string>();
@@ -2038,12 +2043,12 @@ namespace NetworkMonitorApp
                 }
                 LatencyStatistics stats = LatencyStatistics.Calculate(latency);
                 formatted.Add(name + " " + succeeded.ToString(CultureInfo.InvariantCulture) + "/" + attempted.ToString(CultureInfo.InvariantCulture) +
-                    (stats.Median.HasValue ? ", median " + stats.Median.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : ""));
+                    (stats.Median.HasValue ? ", " + Localization.Get(language, "Median") + " " + stats.Median.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : ""));
             }
             return String.Join("; ", formatted.ToArray());
         }
 
-        private static string FormatEndpointStats(IList<Sample> samples, bool https)
+        private static string FormatEndpointStats(IList<Sample> samples, bool https, AppLanguage language)
         {
             string[] hosts = https
                 ? new string[] { "www.msftconnecttest.com", "www.google.com", "cp.cloudflare.com" }
@@ -2068,7 +2073,7 @@ namespace NetworkMonitorApp
                 }
                 output.Add(host + " " + successful.ToString(CultureInfo.InvariantCulture) + "/" + attempted.ToString(CultureInfo.InvariantCulture));
             }
-            return String.Join(", ", output.ToArray()) + " (success/attempts)";
+            return String.Join(", ", output.ToArray()) + (language == AppLanguage.Romanian ? " (reușite/încercări)" : " (success/attempts)");
         }
 
         private static double? AverageIntervalSeconds(IList<Sample> samples)
@@ -2083,6 +2088,11 @@ namespace NetworkMonitorApp
         private static string Format(double? value, string suffix)
         {
             return value.HasValue ? value.Value.ToString("0.0", CultureInfo.InvariantCulture) + suffix : "n/a";
+        }
+
+        private static string FormatLocalized(double? value, string suffix, AppLanguage language)
+        {
+            return value.HasValue ? value.Value.ToString("0.0", CultureInfo.InvariantCulture) + suffix : Localization.Get(language, "NoValue");
         }
     }
 
@@ -2233,6 +2243,11 @@ namespace NetworkMonitorApp
         private readonly TextBox diagnosisBox;
         private readonly GlassComboBox languageSelector;
         private readonly Label headingLabel;
+        private readonly Label headerSubtitle;
+        private readonly Label heroEyebrow;
+        private readonly Label metricHeading;
+        private readonly Label metricNote;
+        private readonly Label activityTitle;
         private readonly Label footerLabel;
         private readonly Label aiStatusLabel;
         private readonly SoftSurfacePanel diagnosisGroup;
@@ -2281,7 +2296,7 @@ namespace NetworkMonitorApp
 
             headingLabel = new Label { Text = Localization.Get(language, "Heading"), Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), AutoSize = true, Location = new Point(26, 14), ForeColor = Color.FromArgb(28, 31, 36) };
             header.Controls.Add(headingLabel);
-            Label headerSubtitle = new Label { Text = language == AppLanguage.Romanian ? "Monitorizare clară. Pași practici." : "Clear monitoring. Practical next steps.", Font = new Font("Segoe UI", 9.5F), AutoSize = true, Location = new Point(28, 48), ForeColor = Color.FromArgb(111, 118, 128) };
+            headerSubtitle = new Label { Text = Localization.Get(language, "HeaderSubtitle"), Font = new Font("Segoe UI", 9.5F), AutoSize = true, Location = new Point(28, 48), ForeColor = Color.FromArgb(111, 118, 128) };
             header.Controls.Add(headerSubtitle);
 
             languageSelector = new GlassComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Size = new Size(120, 30), Anchor = AnchorStyles.Top | AnchorStyles.Right };
@@ -2319,13 +2334,13 @@ namespace NetworkMonitorApp
 
             Panel navigation = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.White, Padding = new Padding(20, 4, 20, 0) };
             Controls.Add(navigation);
-            viewTitle = new Label { Text = language == AppLanguage.Romanian ? "Monitor" : "Monitor", AutoSize = true, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = Color.FromArgb(112, 118, 128), Location = new Point(26, 14) };
+            viewTitle = new Label { Text = Localization.Get(language, "ViewTitle"), AutoSize = true, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = Color.FromArgb(112, 118, 128), Location = new Point(26, 14) };
             navigation.Controls.Add(viewTitle);
-            monitorViewButton = CreateNavigationButton(language == AppLanguage.Romanian ? "Prezentare" : "Overview");
+            monitorViewButton = CreateNavigationButton(Localization.Get(language, "MonitorOverview"));
             monitorViewButton.Location = new Point(128, 6);
             monitorViewButton.Click += delegate { ShowMonitorView(); };
             navigation.Controls.Add(monitorViewButton);
-            reportViewButton = CreateNavigationButton(language == AppLanguage.Romanian ? "Diagnostic" : "Diagnosis");
+            reportViewButton = CreateNavigationButton(Localization.Get(language, "MonitorDiagnosis"));
             reportViewButton.Location = new Point(238, 6);
             reportViewButton.Click += delegate { ShowReportView(); };
             navigation.Controls.Add(reportViewButton);
@@ -2349,7 +2364,7 @@ namespace NetworkMonitorApp
 
             SoftSurfacePanel hero = new SoftSurfacePanel { Location = new Point(0, 0), Size = new Size(monitorStack.Width, 144), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(24) };
             monitorStack.Controls.Add(hero);
-            Label heroEyebrow = new Label { Text = language == AppLanguage.Romanian ? "STAREA CONEXIUNII" : "CONNECTION STATUS", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(24, 19) };
+            heroEyebrow = new Label { Text = Localization.Get(language, "ConnectionStatus"), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(24, 19) };
             hero.Controls.Add(heroEyebrow);
             statusLabel = new Label { Text = Localization.Get(language, "Stopped"), AutoSize = true, Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), ForeColor = Color.FromArgb(30, 35, 43), Location = new Point(24, 43), AutoEllipsis = true };
             hero.Controls.Add(statusLabel);
@@ -2364,7 +2379,7 @@ namespace NetworkMonitorApp
 
             SoftSurfacePanel metricSurface = new SoftSurfacePanel { Location = new Point(0, 158), Size = new Size(monitorStack.Width, 164), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(18) };
             monitorStack.Controls.Add(metricSurface);
-            Label metricHeading = new Label { Text = language == AppLanguage.Romanian ? "VERIFICĂRI" : "NETWORK CHECKS", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(20, 13) };
+            metricHeading = new Label { Text = Localization.Get(language, "MetricHeading"), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(20, 13) };
             metricSurface.Controls.Add(metricHeading);
             metricsLayout = new TableLayoutPanel { Location = new Point(14, 36), Size = new Size(metricSurface.Width - 28, 114), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ColumnCount = 4, RowCount = 2, BackColor = Color.Transparent, Padding = new Padding(0) };
             metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
@@ -2378,12 +2393,12 @@ namespace NetworkMonitorApp
 
             wifiTitle = AddMetricCell(metricsLayout, 0, 0, language == AppLanguage.Romanian ? "Wi-Fi" : "Wi-Fi", out wifiLabel);
             signalTitle = AddMetricCell(metricsLayout, 1, 0, Localization.Get(language, "MetricSignal"), out signalLabel);
-            gatewayTitle = AddMetricCell(metricsLayout, 2, 0, language == AppLanguage.Romanian ? "Gateway" : "Gateway", out gatewayLabel);
+            gatewayTitle = AddMetricCell(metricsLayout, 2, 0, Localization.Get(language, "MetricGateway"), out gatewayLabel);
             internetTitle = AddMetricCell(metricsLayout, 3, 0, language == AppLanguage.Romanian ? "Internet" : "Internet", out internetLabel);
             dnsTitle = AddMetricCell(metricsLayout, 0, 1, language == AppLanguage.Romanian ? "DNS" : "DNS", out dnsLabel);
             downloadTitle = AddMetricCell(metricsLayout, 1, 1, Localization.Get(language, "MetricDownload"), out downloadLabel);
             uploadTitle = AddMetricCell(metricsLayout, 2, 1, Localization.Get(language, "MetricUpload"), out uploadLabel);
-            Label metricNote = new Label { Text = language == AppLanguage.Romanian ? "Probe IPv4/IPv6 și HTTPS independente" : "Independent IPv4/IPv6 and HTTPS probes", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(111, 118, 128), Font = new Font("Segoe UI", 8F), Padding = new Padding(12, 0, 2, 0) };
+            metricNote = new Label { Text = Localization.Get(language, "MetricProbeNote"), Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.FromArgb(111, 118, 128), Font = new Font("Segoe UI", 8F), Padding = new Padding(12, 0, 2, 0) };
             metricsLayout.Controls.Add(metricNote, 3, 1);
 
             SoftSurfacePanel chartSurface = new SoftSurfacePanel { Location = new Point(0, 326), Size = new Size(monitorStack.Width, 258), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(12) };
@@ -2394,7 +2409,7 @@ namespace NetworkMonitorApp
 
             SoftSurfacePanel activitySurface = new SoftSurfacePanel { Location = new Point(0, 598), Size = new Size(monitorStack.Width, 218), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(16) };
             monitorStack.Controls.Add(activitySurface);
-            Label activityTitle = new Label { Text = language == AppLanguage.Romanian ? "ACTIVITATE RECENTĂ" : "RECENT ACTIVITY", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(18, 12) };
+            activityTitle = new Label { Text = Localization.Get(language, "ActivityTitle"), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(18, 12) };
             activitySurface.Controls.Add(activityTitle);
             grid = new DataGridView { Location = new Point(12, 36), Size = new Size(activitySurface.Width - 24, 170), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Bottom, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false, RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, BackgroundColor = Color.White, BorderStyle = BorderStyle.None, CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Color.FromArgb(239, 241, 244), EnableHeadersVisualStyles = false };
             grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(248, 249, 251);
@@ -2408,7 +2423,7 @@ namespace NetworkMonitorApp
             grid.Columns.Add("time", Localization.Get(language, "Time"));
             grid.Columns.Add("wifi", "Wi-Fi");
             grid.Columns.Add("signal", Localization.Get(language, "GridSignal"));
-            grid.Columns.Add("gateway", "Gateway");
+            grid.Columns.Add("gateway", Localization.Get(language, "GridGateway"));
             grid.Columns.Add("internet", "Internet");
             grid.Columns.Add("targets", Localization.Get(language, "GridTargets"));
             grid.Columns.Add("dns", Localization.Get(language, "GridDNS"));
@@ -2459,6 +2474,7 @@ namespace NetworkMonitorApp
         {
             Text = Localization.Get(language, "AppTitle");
             headingLabel.Text = Localization.Get(language, "Heading");
+            headerSubtitle.Text = Localization.Get(language, "HeaderSubtitle");
             startStopButton.Text = Localization.Get(language, monitoring ? (awaitingInitialSample ? "StartingMonitoring" : "Stop") : (samples.Count > 0 ? "Restart" : "Start"));
             startStopButton.Enabled = !awaitingInitialSample;
             startStopButton.BackColor = monitoring && !awaitingInitialSample ? LiquidGlassTheme.Danger : LiquidGlassTheme.Sapphire;
@@ -2473,16 +2489,20 @@ namespace NetworkMonitorApp
             aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
             disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
             statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
+            heroEyebrow.Text = Localization.Get(language, "ConnectionStatus");
+            metricHeading.Text = Localization.Get(language, "MetricHeading");
+            metricNote.Text = Localization.Get(language, "MetricProbeNote");
+            activityTitle.Text = Localization.Get(language, "ActivityTitle");
             SetMetricTitle(wifiTitle, language == AppLanguage.Romanian ? "Wi-Fi" : "Wi-Fi");
             SetMetricTitle(signalTitle, Localization.Get(language, "MetricSignal"));
-            SetMetricTitle(gatewayTitle, language == AppLanguage.Romanian ? "Gateway" : "Gateway");
+            SetMetricTitle(gatewayTitle, Localization.Get(language, "MetricGateway"));
             SetMetricTitle(internetTitle, language == AppLanguage.Romanian ? "Internet" : "Internet");
             SetMetricTitle(dnsTitle, language == AppLanguage.Romanian ? "DNS" : "DNS");
             SetMetricTitle(downloadTitle, Localization.Get(language, "MetricDownload"));
             SetMetricTitle(uploadTitle, Localization.Get(language, "MetricUpload"));
-            viewTitle.Text = language == AppLanguage.Romanian ? "MONITORIZARE" : "MONITORING";
-            monitorViewButton.Text = language == AppLanguage.Romanian ? "Prezentare" : "Overview";
-            reportViewButton.Text = language == AppLanguage.Romanian ? "Diagnostic" : "Diagnosis";
+            viewTitle.Text = Localization.Get(language, "ViewTitle");
+            monitorViewButton.Text = Localization.Get(language, "MonitorOverview");
+            reportViewButton.Text = Localization.Get(language, "MonitorDiagnosis");
             reportEyebrow.Text = language == AppLanguage.Romanian ? "RAPORTUL SESIUNII" : "SESSION REPORT";
             reportIntro.Text = language == AppLanguage.Romanian ? "Constatări și pași următori" : "Findings and next steps";
             overviewSummary.Text = monitoring
@@ -2629,8 +2649,8 @@ namespace NetworkMonitorApp
                     aiButton.Enabled = true;
                     disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
                     aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
-                    if (success) MessageBox.Show(this, message, Localization.Get(language, "AIConnectedStatus"), MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    else MessageBox.Show(this, message, Localization.Get(language, "AIUnavailable"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    if (success) MessageBox.Show(this, Localization.Get(language, "AIConnectSuccess"), Localization.Get(language, "AIConnectedStatus"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    else MessageBox.Show(this, Localization.Get(language, "AIConnectFailure"), Localization.Get(language, "AIUnavailable"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 });
             });
         }
@@ -2660,7 +2680,7 @@ namespace NetworkMonitorApp
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string message;
-                try { message = ChatGptPlanClient.Disconnect(); }
+                try { ChatGptPlanClient.Disconnect(); message = Localization.Get(language, "AIDisconnectSuccess"); }
                 catch { message = Localization.Get(language, "AIRevocationNote"); }
                 SafeBeginInvoke(delegate
                 {
@@ -2734,7 +2754,8 @@ namespace NetworkMonitorApp
                     }
                     catch (Exception exception)
                     {
-                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIFailedPrefix") + exception.Message;
+                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIFailedPrefix") +
+                            (reportLanguage == AppLanguage.Romanian ? Localization.Get(reportLanguage, "AIExplanationError") : exception.Message);
                     }
                 }
                 else
@@ -2865,10 +2886,12 @@ namespace NetworkMonitorApp
             {
                 int ipv6Attempted = sample.Ipv6TargetResults == null ? 0 : sample.Ipv6TargetResults.Count(delegate(InternetTargetObservation result) { return result.Status != "Unavailable"; });
                 int ipv6Succeeded = sample.Ipv6TargetResults == null ? 0 : sample.Ipv6TargetResults.Count(delegate(InternetTargetObservation result) { return result.Status == "Success"; });
+                string median = Localization.Get(language, "Median");
+                string noValue = Localization.Get(language, "NoValue");
                 string v4 = sample.InternetTargetSucceeded.Value.ToString(CultureInfo.InvariantCulture) + "/" + sample.InternetTargetAttempted.Value.ToString(CultureInfo.InvariantCulture) +
-                    " IPv4; median " + FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
-                string v6 = ipv6Attempted == 0 ? "IPv6 n/a" : "IPv6 " + ipv6Succeeded.ToString(CultureInfo.InvariantCulture) + "/" + ipv6Attempted.ToString(CultureInfo.InvariantCulture) +
-                    "; median " + FormatProbe(sample.Ipv6LatencyMs, sample.Ipv6LatencyMs.HasValue ? "Success" : "Unavailable", language);
+                    " IPv4; " + median + " " + FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
+                string v6 = ipv6Attempted == 0 ? "IPv6 " + noValue : "IPv6 " + ipv6Succeeded.ToString(CultureInfo.InvariantCulture) + "/" + ipv6Attempted.ToString(CultureInfo.InvariantCulture) +
+                    "; " + median + " " + FormatProbe(sample.Ipv6LatencyMs, sample.Ipv6LatencyMs.HasValue ? "Success" : "Unavailable", language);
                 return v4 + "; " + v6;
             }
             return FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
@@ -2886,9 +2909,9 @@ namespace NetworkMonitorApp
                 Directory.CreateDirectory(CsvLogger.LogDirectory);
                 Process.Start(new ProcessStartInfo("explorer.exe", "\"" + CsvLogger.LogDirectory + "\"") { UseShellExecute = true });
             }
-            catch (Exception exception)
+                    catch (Exception)
             {
-                MessageBox.Show("Nu pot deschide folderul logurilor: " + exception.Message, "Monitor retea", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        MessageBox.Show(Localization.Get(language, "OpenLogsError"), Localization.Get(language, "AppTitle"), MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
@@ -2902,8 +2925,8 @@ namespace NetworkMonitorApp
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string result;
-                try { result = RouteTrace.Run(); }
-                catch (Exception exception) { result = exception.Message; }
+                try { result = RouteTrace.Run(language); }
+                catch (Exception) { result = Localization.Get(language, "RouteTraceError"); }
                 SafeBeginInvoke(delegate
                 {
                     routeTraceButton.Enabled = true;
@@ -3117,8 +3140,7 @@ namespace NetworkMonitorApp
                     Font = new Font("Segoe UI", 9.5F),
                     Padding = new Padding(24),
                     AutoEllipsis = true,
-                    Text = Localization.Get(language, "RouteTraceSummaryUnavailable") + Environment.NewLine + Environment.NewLine +
-                        Localization.Get(language, "RouteTraceRawDetails") + " " + (result ?? String.Empty).Trim().Replace("\r\n", " ").Replace("\n", " ")
+                    Text = Localization.Get(language, "RouteTraceSummaryUnavailable")
                 };
                 grid.Visible = hops.Count > 0;
                 emptyState.Visible = hops.Count == 0;
@@ -3227,7 +3249,7 @@ namespace NetworkMonitorApp
             Test(results, "healthy window", HealthyWindow(), "Nu s-au detectat intreruperi");
             Test(results, "wifi disconnect", WindowWith(delegate(Sample s) { s.WifiState = "Disconnected"; }), "Wi-Fi");
             Test(results, "weak signal", WindowWith(delegate(Sample s) { s.WifiSignalPercent = 20; }), "Semnal Wi-Fi");
-            Test(results, "gateway ICMP non-response", WindowWith(delegate(Sample s) { s.GatewayPingStatus = "TimedOut"; s.GatewayLatencyMs = null; }), "probele ICMP nu au primit raspuns");
+            Test(results, "gateway ICMP non-response", WindowWith(delegate(Sample s) { s.GatewayPingStatus = "TimedOut"; s.GatewayLatencyMs = null; }), "probele ICMP nu au primit răspuns");
             Test(results, "all independent probes fail", WindowWith(delegate(Sample s) { s.InternetPingStatus = "TimedOut"; s.HttpsStatus = "AllFailed"; s.HttpsSucceeded = 0; s.HttpsAttempted = 3; }), "toate tintele ICMP IPv4/IPv6 si cele trei endpointuri HTTPS au esuat impreuna");
             Test(results, "one HTTPS endpoint fails but others work", WindowWith(delegate(Sample s) { s.InternetPingStatus = "TimedOut"; s.HttpsStatus = "Success"; s.HttpsSucceeded = 2; s.HttpsAttempted = 3; }), "nu confirma o cadere de Internet");
             Test(results, "dns failure", WindowWith(delegate(Sample s) { s.DnsStatus = "Failed"; }), "DNS");
@@ -3239,7 +3261,7 @@ namespace NetworkMonitorApp
             for (int i = 0; i < gatewaySpikeWindow.Count; i++) gatewaySpikeWindow[i].GatewayLatencyMs = i == gatewaySpikeWindow.Count - 1 ? 180 : 8;
             gatewaySpikeWindow[gatewaySpikeWindow.Count - 1].Events = String.Join(";", NetworkProbe.FindSampleEvents(gatewaySpikeWindow[gatewaySpikeWindow.Count - 1],
                 gatewaySpikeWindow.Take(gatewaySpikeWindow.Count - 1).ToList()));
-            Test(results, "gateway latency spike relative to recent baseline", gatewaySpikeWindow, "Spike relativ local");
+            Test(results, "gateway latency spike relative to recent baseline", gatewaySpikeWindow, "Creștere bruscă a latenței locale");
             ProbeResult majorityTargets = NetworkProbe.AggregateInternetTargets(new InternetTargetObservation[]
             {
                 new InternetTargetObservation { Name = "Cloudflare", Status = "Success", LatencyMs = 20 },
@@ -3455,6 +3477,22 @@ namespace NetworkMonitorApp
             results.Add((loadReportCaveat ? "PASS" : "FAIL") + " | load comparison limits | " + (loadReportCaveat ? "clearly labels correlation as observational" : "missing observational limitation"));
             bool englishReport = DiagnosticEngine.Analyze(HealthyWindow(), AppLanguage.English).IndexOf("NETWORK SESSION DIAGNOSIS", StringComparison.Ordinal) >= 0;
             results.Add((englishReport ? "PASS" : "FAIL") + " | English report | " + (englishReport ? "default report language available" : "English report missing"));
+            string romanianReport = DiagnosticEngine.Analyze(HealthyWindow(), AppLanguage.Romanian);
+            bool romanianUi = Localization.Get(AppLanguage.Romanian, "ContinueChatGPT") == "Continuă cu ChatGPT" &&
+                Localization.Get(AppLanguage.Romanian, "Romanian") == "Română" &&
+                Localization.Get(AppLanguage.Romanian, "MetricGateway") == "Router" &&
+                Localization.Get(AppLanguage.Romanian, "NoValue") == "—" &&
+                Localization.Get(AppLanguage.Romanian, "MetricHeading") != Localization.Get(AppLanguage.English, "MetricHeading");
+            results.Add((romanianUi ? "PASS" : "FAIL") + " | Romanian UI labels | " + (romanianUi ? "previously hardcoded controls now have Romanian labels" : "one or more Romanian labels are missing"));
+            string[] untranslatedReportLabels = new string[] { "gateway", " median ", "jitter", "n/a", "success/attempts", "no successful samples" }
+                .Where(delegate(string englishText) { return romanianReport.IndexOf(englishText, StringComparison.OrdinalIgnoreCase) >= 0; }).ToArray();
+            bool romanianReportLocalized = untranslatedReportLabels.Length == 0;
+            results.Add((romanianReportLocalized ? "PASS" : "FAIL") + " | Romanian report localization | " + (romanianReportLocalized ? "statistics and endpoint summaries do not leak English labels" : "untranslated labels: " + String.Join(", ", untranslatedReportLabels)));
+            string romanianLoadReport = DiagnosticEngine.Analyze(loadWindow, AppLanguage.Romanian);
+            string[] untranslatedLoadLabels = new string[] { "gateway", " median ", "jitter", "n/a", "success/attempts", "no successful samples" }
+                .Where(delegate(string englishText) { return romanianLoadReport.IndexOf(englishText, StringComparison.OrdinalIgnoreCase) >= 0; }).ToArray();
+            bool romanianLoadLocalized = untranslatedLoadLabels.Length == 0 && romanianLoadReport.Contains("Mediana routerului");
+            results.Add((romanianLoadLocalized ? "PASS" : "FAIL") + " | Romanian load comparison localization | " + (romanianLoadLocalized ? "active and quiet period labels are Romanian" : "untranslated load report text: " + String.Join(", ", untranslatedLoadLabels)));
             bool pkce = ChatGptPlanClient.CreateCodeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
             results.Add((pkce ? "PASS" : "FAIL") + " | PKCE S256 | " + (pkce ? "RFC challenge vector matches" : "challenge mismatch"));
             bool loopbackCallback = false;

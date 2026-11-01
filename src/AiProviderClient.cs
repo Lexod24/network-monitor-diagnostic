@@ -323,9 +323,9 @@ namespace NetworkMonitorApp
                 AiProvider selected = (AiProvider)provider.SelectedIndex;
                 AiProviderClient.Save(new AiProviderSettings { Provider = selected, Model = model.Text.Trim(), ApiKey = selected == AiProvider.Gemini || selected == AiProvider.Groq ? apiKey.Text.Trim() : "" });
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                MessageBox.Show(this, exception.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, Localization.Get(romanian ? AppLanguage.Romanian : AppLanguage.English, "AIProviderSaveError"), Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 DialogResult = DialogResult.None;
             }
         }
