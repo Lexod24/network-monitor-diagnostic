@@ -2,6 +2,10 @@
 
 A portable Windows desktop app that monitors connection quality and produces a transparent, evidence-based diagnosis. English is selected by default; Romanian is available in the app.
 
+If this app helps you, please star this repository. Questions, bugs or suggestions? [Open an issue](https://github.com/Lexod24/network-monitor-diagnostic/issues).
+
+Ți-a fost utilă aplicația? Acordă o stea repository-ului. Ai o întrebare, problemă sau sugestie? [Deschide un issue](https://github.com/Lexod24/network-monitor-diagnostic/issues).
+
 ## Download and start
 
 [Download the portable Windows app (.zip)](https://raw.githubusercontent.com/Lexod24/network-monitor-diagnostic/main/NetworkMonitor-Portable.zip). Extract the ZIP and double-click `NetworkMonitor.exe`. No administrator rights or installation are required. The app does not change Windows or router settings.
