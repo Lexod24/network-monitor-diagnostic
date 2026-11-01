@@ -35,6 +35,11 @@ namespace NetworkMonitorApp
         public string InternetPingStatus;
         public double? InternetLatencyMs;
         public double? InternetLossPct;
+        public long? NetworkBytesReceived;
+        public long? NetworkBytesSent;
+        public double? DownloadMbps;
+        public double? UploadMbps;
+        public string NetworkInterfaceId; // retained only in memory to detect adapter switches; never written to logs or sent to AI
         public string HttpsStatus;
         public double? HttpsLatencyMs;
         public string HttpsEndpointResults;
@@ -69,6 +74,13 @@ namespace NetworkMonitorApp
             int? signal;
             string gateway;
             string wifiState = GetNetworkSnapshot(out signal, out gateway);
+            long? bytesReceived;
+            long? bytesSent;
+            string interfaceId;
+            GetTrafficCounters(gateway, out bytesReceived, out bytesSent, out interfaceId);
+            Sample lastSample = previousSamples == null ? null : previousSamples.LastOrDefault();
+            double elapsedSeconds = lastSample == null ? 0 : (timestamp - lastSample.Timestamp).TotalSeconds;
+            bool sameInterface = lastSample != null && !String.IsNullOrEmpty(interfaceId) && String.Equals(interfaceId, lastSample.NetworkInterfaceId, StringComparison.Ordinal);
             Task<ProbeResult> gatewayTask = gateway == null ? null : Task.Factory.StartNew(delegate { return PingTarget(gateway); });
             Task<ProbeResult> internetTask = Task.Factory.StartNew(delegate { return PingTarget(InternetPingAddress); });
             Task<List<ProbeResult>> dnsTask = checkDns ? Task.Factory.StartNew(delegate { return ProbeDnsHosts(); }) : null;
@@ -116,6 +128,11 @@ namespace NetworkMonitorApp
             sample.GatewayLatencyMs = gatewayProbe.LatencyMs;
             sample.InternetPingStatus = internetProbe.Status;
             sample.InternetLatencyMs = internetProbe.LatencyMs;
+            sample.NetworkBytesReceived = bytesReceived;
+            sample.NetworkBytesSent = bytesSent;
+            sample.NetworkInterfaceId = interfaceId;
+            sample.DownloadMbps = CalculateMegabitsPerSecond(bytesReceived, sameInterface ? lastSample.NetworkBytesReceived : (long?)null, elapsedSeconds);
+            sample.UploadMbps = CalculateMegabitsPerSecond(bytesSent, sameInterface ? lastSample.NetworkBytesSent : (long?)null, elapsedSeconds);
             sample.HttpsStatus = https.Status;
             sample.HttpsLatencyMs = httpsResults.Any(delegate(ProbeResult p) { return p.Status == "Success"; }) ? https.LatencyMs : (double?)null;
             sample.HttpsSucceeded = httpsResults.Count == 0 ? (int?)null : httpsSucceeded;
@@ -145,6 +162,38 @@ namespace NetworkMonitorApp
                 sample.Connectivity = "OK";
 
             return sample;
+        }
+
+        internal static double? CalculateMegabitsPerSecond(long? currentBytes, long? previousBytes, double elapsedSeconds)
+        {
+            if (!currentBytes.HasValue || !previousBytes.HasValue || elapsedSeconds <= 0 || currentBytes.Value < previousBytes.Value) return null;
+            return (currentBytes.Value - previousBytes.Value) * 8.0 / elapsedSeconds / 1000000.0;
+        }
+
+        private static void GetTrafficCounters(string gateway, out long? bytesReceived, out long? bytesSent, out string interfaceId)
+        {
+            bytesReceived = null;
+            bytesSent = null;
+            interfaceId = null;
+            if (String.IsNullOrEmpty(gateway)) return;
+            try
+            {
+                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    bool hasGateway = ni.GetIPProperties().GatewayAddresses.Any(delegate(GatewayIPAddressInformation address)
+                    {
+                        return address.Address.AddressFamily == AddressFamily.InterNetwork && String.Equals(address.Address.ToString(), gateway, StringComparison.Ordinal);
+                    });
+                    if (!hasGateway) continue;
+                    IPv4InterfaceStatistics counters = ni.GetIPv4Statistics();
+                    bytesReceived = counters.BytesReceived;
+                    bytesSent = counters.BytesSent;
+                    interfaceId = ni.Id;
+                    return;
+                }
+            }
+            catch { bytesReceived = null; bytesSent = null; interfaceId = null; }
         }
 
         private static string GetNetworkSnapshot(out int? signalPercent, out string gateway)
@@ -365,6 +414,109 @@ namespace NetworkMonitorApp
         }
     }
 
+    internal sealed class LatencyStatistics
+    {
+        public int Count;
+        public double? Minimum;
+        public double? Median;
+        public double? P95;
+        public double? Maximum;
+        public double? Jitter;
+
+        public static LatencyStatistics Calculate(IEnumerable<double?> values)
+        {
+            List<double?> sequence = values.ToList();
+            List<double> samples = sequence.Where(delegate(double? value) { return value.HasValue && !Double.IsNaN(value.Value) && !Double.IsInfinity(value.Value) && value.Value >= 0; })
+                .Select(delegate(double? value) { return value.Value; }).ToList();
+            if (samples.Count == 0) return new LatencyStatistics();
+            List<double> ordered = samples.OrderBy(delegate(double value) { return value; }).ToList();
+            double jitterTotal = 0;
+            int jitterIntervals = 0;
+            double? previous = null;
+            foreach (double? value in sequence)
+            {
+                if (!value.HasValue || Double.IsNaN(value.Value) || Double.IsInfinity(value.Value) || value.Value < 0) { previous = null; continue; }
+                if (previous.HasValue) { jitterTotal += Math.Abs(value.Value - previous.Value); jitterIntervals++; }
+                previous = value;
+            }
+            double median = ordered.Count % 2 == 0 ? (ordered[ordered.Count / 2 - 1] + ordered[ordered.Count / 2]) / 2.0 : ordered[ordered.Count / 2];
+            int p95Index = Math.Max(0, (int)Math.Ceiling(0.95 * ordered.Count) - 1);
+            return new LatencyStatistics
+            {
+                Count = samples.Count,
+                Minimum = ordered[0],
+                Median = median,
+                P95 = ordered[p95Index],
+                Maximum = ordered[ordered.Count - 1],
+                Jitter = jitterIntervals > 0 ? (double?)(jitterTotal / jitterIntervals) : null
+            };
+        }
+    }
+
+    internal sealed class LatencyChartPanel : Panel
+    {
+        private List<Sample> samples = new List<Sample>();
+        public AppLanguage Language = AppLanguage.English;
+
+        public LatencyChartPanel()
+        {
+            DoubleBuffered = true;
+            BackColor = Color.White;
+            BorderStyle = BorderStyle.FixedSingle;
+        }
+
+        public void SetSamples(IList<Sample> values)
+        {
+            samples = values == null ? new List<Sample>() : values.Skip(Math.Max(0, values.Count - 60)).ToList();
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            Rectangle plot = new Rectangle(48, 23, Math.Max(1, ClientSize.Width - 62), Math.Max(1, ClientSize.Height - 49));
+            TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartTitle"), Font, new Point(8, 4), Color.FromArgb(55, 65, 81));
+            double maximum = samples.SelectMany(delegate(Sample s) { return new double?[] { s.GatewayLatencyMs, s.InternetLatencyMs }; })
+                .Where(delegate(double? v) { return v.HasValue; }).Select(delegate(double? v) { return v.Value; }).DefaultIfEmpty(50).Max();
+            maximum = Math.Max(25, Math.Ceiling(maximum / 25.0) * 25.0);
+            using (Pen gridPen = new Pen(Color.FromArgb(225, 230, 235)))
+            using (Pen gatewayPen = new Pen(Color.FromArgb(28, 110, 210), 2F))
+            using (Pen internetPen = new Pen(Color.FromArgb(225, 125, 35), 2F))
+            using (Brush pointGateway = new SolidBrush(gatewayPen.Color))
+            using (Brush pointInternet = new SolidBrush(internetPen.Color))
+            {
+                for (int i = 0; i <= 4; i++)
+                {
+                    float y = plot.Bottom - plot.Height * i / 4F;
+                    e.Graphics.DrawLine(gridPen, plot.Left, y, plot.Right, y);
+                    TextRenderer.DrawText(e.Graphics, (maximum * i / 4.0).ToString("0", CultureInfo.InvariantCulture), Font, new Point(5, (int)y - 7), Color.Gray);
+                }
+                DrawSeries(e.Graphics, plot, maximum, gatewayPen, pointGateway, delegate(Sample s) { return s.GatewayLatencyMs; });
+                DrawSeries(e.Graphics, plot, maximum, internetPen, pointInternet, delegate(Sample s) { return s.InternetLatencyMs; });
+                TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartGateway"), Font, new Point(Math.Max(55, ClientSize.Width - 145), 4), gatewayPen.Color);
+                TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartInternet"), Font, new Point(Math.Max(110, ClientSize.Width - 75), 4), internetPen.Color);
+            }
+            if (samples.Count == 0) TextRenderer.DrawText(e.Graphics, Localization.Get(Language, "LatencyChartEmpty"), Font, plot, Color.Gray, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
+        private void DrawSeries(Graphics graphics, Rectangle plot, double maximum, Pen pen, Brush brush, Func<Sample, double?> selector)
+        {
+            PointF? previous = null;
+            for (int i = 0; i < samples.Count; i++)
+            {
+                double? value = selector(samples[i]);
+                if (!value.HasValue) { previous = null; continue; }
+                float x = samples.Count == 1 ? plot.Left : plot.Left + plot.Width * i / (float)(samples.Count - 1);
+                float y = plot.Bottom - (float)Math.Min(maximum, value.Value) / (float)maximum * plot.Height;
+                PointF current = new PointF(x, y);
+                if (previous.HasValue) graphics.DrawLine(pen, previous.Value, current);
+                graphics.FillEllipse(brush, x - 2.5F, y - 2.5F, 5F, 5F);
+                previous = current;
+            }
+        }
+    }
+
     internal static class DiagnosticEngine
     {
         public static string Analyze(IList<Sample> samples, AppLanguage language)
@@ -383,12 +535,16 @@ namespace NetworkMonitorApp
             double? signal = Average(samples.Where(delegate(Sample s) { return s.WifiSignalPercent.HasValue; }).Select(delegate(Sample s) { return (double)s.WifiSignalPercent.Value; }));
             double? gateway = Average(samples.Where(delegate(Sample s) { return s.GatewayLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.GatewayLatencyMs.Value; }));
             double? internet = Average(samples.Where(delegate(Sample s) { return s.InternetLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.InternetLatencyMs.Value; }));
+            double? download = Average(samples.Where(delegate(Sample s) { return s.DownloadMbps.HasValue; }).Select(delegate(Sample s) { return s.DownloadMbps.Value; }));
+            double? upload = Average(samples.Where(delegate(Sample s) { return s.UploadMbps.HasValue; }).Select(delegate(Sample s) { return s.UploadMbps.Value; }));
             StringBuilder b = new StringBuilder();
             b.AppendLine("NETWORK SESSION DIAGNOSIS - measured locally; transparent rules");
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Period: {0} to {1}", samples[0].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz"), samples[samples.Count - 1].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz")));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Samples: {0}; nominal interval: 5 seconds", samples.Count));
             b.AppendLine("Measured average sample gap: " + Format(AverageIntervalSeconds(samples), " seconds"));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Measured averages: Wi-Fi signal {0}; gateway {1}; Internet ICMP {2}.", Format(signal, "%"), Format(gateway, " ms"), Format(internet, " ms")));
+            b.AppendLine("Passive traffic on the active gateway interface: average download " + Format(download, " Mbps") + "; upload " + Format(upload, " Mbps") + ". This is current device traffic, not the connection's maximum speed.");
+            b.AppendLine("Successful ICMP latency statistics: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; })) + "; Internet " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; })) + ". Jitter is mean absolute change between consecutive successful samples.");
             b.AppendLine(); b.AppendLine("FINDINGS AND INTERPRETATION");
             int findings = 0;
             if (wifiDrops > 0) { b.AppendLine(String.Format(CultureInfo.InvariantCulture, "- Wi-Fi disconnected in {0} sample(s). Windows reported the wireless interface as disconnected. This confirms a disconnect during the capture, but not its physical cause.", wifiDrops)); findings++; }
@@ -500,6 +656,10 @@ namespace NetworkMonitorApp
                 .Select(delegate(Sample s) { return s.GatewayLatencyMs.Value; }));
             double? averageInternet = Average(samples.Where(delegate(Sample s) { return s.InternetLatencyMs.HasValue; })
                 .Select(delegate(Sample s) { return s.InternetLatencyMs.Value; }));
+            double? averageDownload = Average(samples.Where(delegate(Sample s) { return s.DownloadMbps.HasValue; })
+                .Select(delegate(Sample s) { return s.DownloadMbps.Value; }));
+            double? averageUpload = Average(samples.Where(delegate(Sample s) { return s.UploadMbps.HasValue; })
+                .Select(delegate(Sample s) { return s.UploadMbps.Value; }));
 
             StringBuilder report = new StringBuilder();
             report.AppendLine("DIAGNOSTIC LOCAL - bazat pe reguli transparente; sumarul poate primi explicatie AI separat");
@@ -509,6 +669,8 @@ namespace NetworkMonitorApp
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Esantioane: {0}; frecventa nominala: 5 secunde", samples.Count));
             report.AppendLine("Interval mediu masurat intre esantioane: " + Format(AverageIntervalSeconds(samples), " secunde"));
             report.AppendLine("Medii observate: semnal Wi-Fi {0}; gateway {1}; Internet {2}.".Replace("{0}", Format(averageSignal, "%")).Replace("{1}", Format(averageGateway, " ms")).Replace("{2}", Format(averageInternet, " ms")));
+            report.AppendLine("Trafic pasiv pe interfata activa: descarcare medie " + Format(averageDownload, " Mbps") + "; incarcare " + Format(averageUpload, " Mbps") + ". Este traficul curent al calculatorului, nu viteza maxima a abonamentului.");
+            report.AppendLine("Statistici latență ICMP cu raspuns: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; })) + "; Internet " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; })) + ". Jitter = media variatiei absolute intre esantioanele reusite consecutive.");
             report.AppendLine();
             report.AppendLine("CONSTATARE SI INTERPRETARE");
             for (int i = 0; i < findings.Count; i++)
@@ -526,6 +688,15 @@ namespace NetworkMonitorApp
             List<double> list = values.ToList();
             if (list.Count == 0) return null;
             return list.Average();
+        }
+
+        private static string FormatLatencyStatistics(IEnumerable<double?> values)
+        {
+            LatencyStatistics stats = LatencyStatistics.Calculate(values);
+            if (stats.Count == 0) return "n/a (no successful samples)";
+            return String.Format(CultureInfo.InvariantCulture, "min {0:0.0}, median {1:0.0}, p95 {2:0.0}, max {3:0.0} ms, jitter {4}",
+                stats.Minimum.Value, stats.Median.Value, stats.P95.Value, stats.Maximum.Value,
+                stats.Jitter.HasValue ? stats.Jitter.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : "n/a");
         }
 
         private static string FormatEndpointStats(IList<Sample> samples, bool https)
@@ -575,6 +746,7 @@ namespace NetworkMonitorApp
     {
         private const long MaxBytes = 10L * 1024L * 1024L;
         private const int RetainedRotatedFiles = 10;
+        private const string CsvHeader = "TimestampLocal,WifiState,WifiSignalPercent,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps";
         private static readonly object Gate = new object();
         public static readonly string LogDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetworkMonitor", "Logs");
@@ -587,8 +759,9 @@ namespace NetworkMonitorApp
             {
                 Directory.CreateDirectory(LogDirectory);
                 RotateIfNeeded();
+                EnsureCsvSchema();
                 if (!File.Exists(CsvPath))
-                    File.WriteAllText(CsvPath, "TimestampLocal,WifiState,WifiSignalPercent,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events\r\n", Encoding.UTF8);
+                    File.WriteAllText(CsvPath, CsvHeader + "\r\n", Encoding.UTF8);
                 string[] cells = new string[]
                 {
                     sample.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture),
@@ -611,7 +784,9 @@ namespace NetworkMonitorApp
                     sample.DnsSucceeded.HasValue ? sample.DnsSucceeded.Value.ToString(CultureInfo.InvariantCulture) : "",
                     sample.DnsAttempted.HasValue ? sample.DnsAttempted.Value.ToString(CultureInfo.InvariantCulture) : "",
                     sample.Connectivity,
-                    sample.Events
+                    sample.Events,
+                    Number(sample.DownloadMbps),
+                    Number(sample.UploadMbps)
                 };
                 File.AppendAllText(CsvPath, String.Join(",", cells.Select(CsvEscape).ToArray()) + "\r\n", Encoding.UTF8);
             }
@@ -626,8 +801,33 @@ namespace NetworkMonitorApp
         private static void RotateIfNeeded()
         {
             if (!File.Exists(CsvPath) || new FileInfo(CsvPath).Length < MaxBytes) return;
-            string rotated = Path.Combine(LogDirectory, "connection-monitor-app-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture) + ".csv");
-            File.Move(CsvPath, rotated);
+            File.Move(CsvPath, GetRotatedPath());
+            RetainRotatedFiles();
+        }
+
+        internal static bool HeaderMatches(string line) { return String.Equals((line ?? "").TrimStart('\uFEFF'), CsvHeader, StringComparison.Ordinal); }
+
+        private static void EnsureCsvSchema()
+        {
+            if (!File.Exists(CsvPath)) return;
+            string header;
+            using (StreamReader reader = new StreamReader(CsvPath, Encoding.UTF8, true)) header = reader.ReadLine();
+            if (HeaderMatches(header)) return;
+            File.Move(CsvPath, GetRotatedPath());
+            RetainRotatedFiles();
+        }
+
+        private static string GetRotatedPath()
+        {
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
+            string rotated = Path.Combine(LogDirectory, "connection-monitor-app-" + stamp + ".csv");
+            int index = 1;
+            while (File.Exists(rotated)) rotated = Path.Combine(LogDirectory, "connection-monitor-app-" + stamp + "-" + (index++).ToString(CultureInfo.InvariantCulture) + ".csv");
+            return rotated;
+        }
+
+        private static void RetainRotatedFiles()
+        {
             List<FileInfo> older = Directory.GetFiles(LogDirectory, "connection-monitor-app-*.csv")
                 .Select(delegate(string path) { return new FileInfo(path); })
                 .OrderByDescending(delegate(FileInfo file) { return file.LastWriteTimeUtc; })
@@ -658,13 +858,17 @@ namespace NetworkMonitorApp
         private readonly Button copyReportButton;
         private readonly Button aiButton;
         private readonly Button disconnectAiButton;
+        private readonly Button aiSettingsButton;
         private readonly Label statusLabel;
         private readonly Label wifiLabel;
         private readonly Label signalLabel;
         private readonly Label gatewayLabel;
         private readonly Label internetLabel;
         private readonly Label dnsLabel;
+        private readonly Label downloadLabel;
+        private readonly Label uploadLabel;
         private readonly DataGridView grid;
+        private readonly LatencyChartPanel latencyChart;
         private readonly TextBox diagnosisBox;
         private readonly ComboBox languageSelector;
         private readonly Label headingLabel;
@@ -685,7 +889,7 @@ namespace NetworkMonitorApp
             catch { }
             Text = Localization.Get(language, "AppTitle");
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(900, 650);
+            MinimumSize = new Size(1000, 650);
             ClientSize = new Size(1120, 760);
             Font = new Font("Segoe UI", 9F);
             BackColor = Color.FromArgb(245, 247, 250);
@@ -722,6 +926,16 @@ namespace NetworkMonitorApp
             aiButton.Click += AiButtonClicked;
             header.Controls.Add(aiButton);
 
+            aiSettingsButton = new Button();
+            aiSettingsButton.Text = Localization.Get(language, "AISettings");
+            latencyChart.Language = language;
+            latencyChart.Invalidate();
+            aiSettingsButton.Size = new Size(150, 32);
+            aiSettingsButton.Location = new Point(640, 14);
+            aiSettingsButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            aiSettingsButton.Click += AiSettingsClicked;
+            header.Controls.Add(aiSettingsButton);
+
             disconnectAiButton = new Button();
             disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
             disconnectAiButton.Size = new Size(130, 32);
@@ -750,7 +964,7 @@ namespace NetworkMonitorApp
             header.Controls.Add(statusLabel);
 
             aiStatusLabel = new Label();
-            aiStatusLabel.Text = Localization.Get(language, ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
+            aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
             aiStatusLabel.AutoSize = false;
             aiStatusLabel.Size = new Size(185, 22);
             aiStatusLabel.Location = new Point(390, 68);
@@ -787,6 +1001,8 @@ namespace NetworkMonitorApp
             gatewayLabel = MakeMetric("Gateway: n/a", metrics);
             internetLabel = MakeMetric("Internet: n/a", metrics);
             dnsLabel = MakeMetric("DNS: n/a", metrics);
+            downloadLabel = MakeMetric(Localization.Get(language, "MetricDownload") + ": n/a", metrics);
+            uploadLabel = MakeMetric(Localization.Get(language, "MetricUpload") + ": n/a", metrics);
 
             SplitContainer split = new SplitContainer();
             split.Dock = DockStyle.Fill;
@@ -818,6 +1034,12 @@ namespace NetworkMonitorApp
             grid.Columns[0].FillWeight = 125;
             grid.Columns[7].FillWeight = 180;
             split.Panel1.Controls.Add(grid);
+
+            latencyChart = new LatencyChartPanel();
+            latencyChart.Dock = DockStyle.Top;
+            latencyChart.Height = 150;
+            latencyChart.Language = language;
+            split.Panel1.Controls.Add(latencyChart);
 
             diagnosisGroup = new GroupBox();
             diagnosisGroup.Text = Localization.Get(language, "DiagnosisGroup");
@@ -861,16 +1083,18 @@ namespace NetworkMonitorApp
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
             copyReportButton.Text = Localization.Get(language, "CopyReport");
             aiButton.Text = Localization.Get(language, "ContinueChatGPT");
+            aiSettingsButton.Text = Localization.Get(language, "AISettings");
             disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
-            bool aiConnected = ChatGptPlanClient.IsConnected;
-            aiStatusLabel.Text = Localization.Get(language, aiConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
-            disconnectAiButton.Enabled = aiConnected;
+            aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
+            disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
             statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
             wifiLabel.Text = Localization.Get(language, "MetricWifi") + ": " + Localization.Get(language, "NoValue");
             signalLabel.Text = Localization.Get(language, "MetricSignal") + ": " + Localization.Get(language, "NoValue");
             gatewayLabel.Text = Localization.Get(language, "MetricGateway") + ": " + Localization.Get(language, "NoValue");
             internetLabel.Text = Localization.Get(language, "MetricInternet") + ": " + Localization.Get(language, "NoValue");
             dnsLabel.Text = Localization.Get(language, "MetricDns") + ": " + Localization.Get(language, "NoValue");
+            downloadLabel.Text = Localization.Get(language, "MetricDownload") + ": " + Localization.Get(language, "NoValue");
+            uploadLabel.Text = Localization.Get(language, "MetricUpload") + ": " + Localization.Get(language, "NoValue");
             diagnosisGroup.Text = Localization.Get(language, "DiagnosisGroup");
             footerLabel.Text = Localization.Get(language, "Footer");
             grid.Columns[0].HeaderText = Localization.Get(language, "Time");
@@ -927,11 +1151,28 @@ namespace NetworkMonitorApp
                 {
                     aiButton.Enabled = true;
                     disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
-                    aiStatusLabel.Text = Localization.Get(language, ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
+                    aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
                     if (success) MessageBox.Show(this, message, Localization.Get(language, "AIConnectedStatus"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                     else MessageBox.Show(this, message, Localization.Get(language, "AIUnavailable"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 });
             });
+        }
+
+        private void AiSettingsClicked(object sender, EventArgs e)
+        {
+            using (AiProviderSettingsForm dialog = new AiProviderSettingsForm(language))
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK)
+                {
+                    aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
+                }
+            }
+        }
+
+        private string CurrentAiStatusKey()
+        {
+            if (AiProviderClient.IsConfigured) return "AIProviderReady";
+            return ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus";
         }
 
         private void DisconnectAiClicked(object sender, EventArgs e)
@@ -947,7 +1188,7 @@ namespace NetworkMonitorApp
                 SafeBeginInvoke(delegate
                 {
                     aiButton.Enabled = true;
-                    aiStatusLabel.Text = Localization.Get(language, "AINotConnectedStatus");
+                    aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
                     MessageBox.Show(this, message, Localization.Get(language, "DisconnectChatGPT"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 });
             });
@@ -957,6 +1198,7 @@ namespace NetworkMonitorApp
         {
             lock (samplesGate) samples.Clear();
             grid.Rows.Clear();
+            latencyChart.SetSamples(new List<Sample>());
             diagnosisBox.Clear();
             nextDnsCheck = DateTimeOffset.MinValue;
             monitoring = true;
@@ -990,14 +1232,17 @@ namespace NetworkMonitorApp
                 lock (samplesGate) copy = new List<Sample>(samples);
                 AppLanguage reportLanguage = language;
                 string report = DiagnosticEngine.Analyze(copy, reportLanguage);
-                bool explainWithAi = ChatGptPlanClient.IsConnected;
-                if (explainWithAi)
+                AiProviderSettings alternativeProvider = AiProviderClient.Load();
+                bool explainWithAlternative = alternativeProvider.Provider != AiProvider.None;
+                bool explainWithChatGpt = !explainWithAlternative && ChatGptPlanClient.IsConnected;
+                if (explainWithChatGpt || explainWithAlternative)
                 {
                     SafeBeginInvoke(delegate { aiStatusLabel.Text = Localization.Get(reportLanguage, "AIAnalyzingStatus"); });
                     try
                     {
-                        string explanation = ChatGptPlanClient.Explain(copy, reportLanguage);
-                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIExplanationHeader") + Environment.NewLine + explanation;
+                        string explanation = explainWithChatGpt ? ChatGptPlanClient.Explain(copy, reportLanguage) : AiProviderClient.Explain(copy, reportLanguage);
+                        string providerName = explainWithChatGpt ? "ChatGPT" : alternativeProvider.Provider.ToString();
+                        report += Environment.NewLine + Localization.Format(reportLanguage, "AIExplanationHeader") + " (" + providerName + ")" + Environment.NewLine + explanation;
                     }
                     catch (Exception exception)
                     {
@@ -1015,7 +1260,7 @@ namespace NetworkMonitorApp
                     startStopButton.Text = Localization.Get(language, "Restart");
                     startStopButton.BackColor = Color.FromArgb(23, 112, 214);
                     startStopButton.Enabled = true;
-                    aiStatusLabel.Text = Localization.Get(language, ChatGptPlanClient.IsConnected ? "AIConnectedStatus" : "AINotConnectedStatus");
+                    aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
                 });
             });
         }
@@ -1069,6 +1314,8 @@ namespace NetworkMonitorApp
             gatewayLabel.Text = Localization.Get(language, "MetricGateway") + ": " + FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
             internetLabel.Text = Localization.Get(language, "MetricInternet") + ": " + FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
             dnsLabel.Text = Localization.Get(language, "MetricDns") + ": " + Localization.Status(language, sample.DnsStatus);
+            downloadLabel.Text = Localization.Get(language, "MetricDownload") + ": " + (sample.DownloadMbps.HasValue ? Format(sample.DownloadMbps) + " Mbps" : Localization.Get(language, "NoValue"));
+            uploadLabel.Text = Localization.Get(language, "MetricUpload") + ": " + (sample.UploadMbps.HasValue ? Format(sample.UploadMbps) + " Mbps" : Localization.Get(language, "NoValue"));
             statusLabel.Text = Localization.Get(language, "Running") + " - " + (language == AppLanguage.Romanian ? "ultima proba " : "latest probe ") + sample.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
             string gateway = FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
@@ -1078,6 +1325,9 @@ namespace NetworkMonitorApp
                 gateway + " / loss " + Format(sample.GatewayLossPct) + "%", internet + " / loss " + Format(sample.InternetLossPct) + "%",
                 Localization.Status(language, sample.DnsStatus), Localization.Status(language, sample.Connectivity), String.Join("; ", sample.Events.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(delegate(string code) { return Localization.Event(language, code); }).ToArray()));
             if (grid.Rows.Count > 1000) grid.Rows.RemoveAt(grid.Rows.Count - 1);
+            List<Sample> chartSamples;
+            lock (samplesGate) chartSamples = new List<Sample>(samples);
+            latencyChart.SetSamples(chartSamples);
             if (sample.Events.Length > 0)
                 diagnosisBox.Text = (language == AppLanguage.Romanian ? "Eveniment observat: " : "Event observed: ") + String.Join("; ", sample.Events.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(delegate(string code) { return Localization.Event(language, code); }).ToArray()) + Environment.NewLine + (language == AppLanguage.Romanian ? "Lasa monitorul pornit pana trece problema; diagnosticul complet apare la oprire." : "Keep monitoring until the issue passes; the full diagnosis appears when you stop.");
         }
@@ -1184,6 +1434,65 @@ namespace NetworkMonitorApp
                 new Dictionary<string, object> { { "role", "user" }, { "content", summary } });
             bool noStoreStreaming = aiPayload.ContainsKey("store") && aiPayload["store"].Equals(false) && aiPayload.ContainsKey("stream") && aiPayload["stream"].Equals(true);
             results.Add((noStoreStreaming ? "PASS" : "FAIL") + " | Responses privacy flags | " + (noStoreStreaming ? "store=false and stream=true" : "required request flags missing"));
+            bool aiEndpoints = AiProviderClient.GetEndpoint(AiProvider.Ollama) == "http://127.0.0.1:11434/api/chat" &&
+                AiProviderClient.GetEndpoint(AiProvider.Gemini).StartsWith("https://generativelanguage.googleapis.com/", StringComparison.Ordinal) &&
+                AiProviderClient.GetEndpoint(AiProvider.Groq) == "https://api.groq.com/openai/v1/chat/completions";
+            results.Add((aiEndpoints ? "PASS" : "FAIL") + " | alternate AI provider endpoints | " + (aiEndpoints ? "local Ollama and HTTPS cloud providers configured" : "provider endpoint mismatch"));
+            bool aiPrompt = AiProviderClient.BuildPrompt("aggregate-only-test", AppLanguage.Romanian).StartsWith("Explain this network-monitoring report in plain Romanian.", StringComparison.Ordinal) &&
+                AiProviderClient.BuildPrompt("aggregate-only-test", AppLanguage.English).Contains("aggregate-only-test");
+            results.Add((aiPrompt ? "PASS" : "FAIL") + " | alternate AI prompt language and report | " + (aiPrompt ? "language and aggregated report included" : "prompt content mismatch"));
+            bool rejectsMissingCloudKey = false;
+            try { AiProviderClient.Validate(new AiProviderSettings { Provider = AiProvider.Groq, Model = "test-model", ApiKey = "" }); }
+            catch (InvalidOperationException) { rejectsMissingCloudKey = true; }
+            bool acceptsOllamaWithoutKey = true;
+            try { AiProviderClient.Validate(new AiProviderSettings { Provider = AiProvider.Ollama, Model = "qwen3:4b", ApiKey = "" }); }
+            catch { acceptsOllamaWithoutKey = false; }
+            bool providerValidation = rejectsMissingCloudKey && acceptsOllamaWithoutKey;
+            results.Add((providerValidation ? "PASS" : "FAIL") + " | alternate AI credential validation | " + (providerValidation ? "cloud key required; local Ollama key not required" : "provider credential validation failed"));
+            bool aiResponseParsing = AiProviderClient.ParseOllamaResponse("{\"message\":{\"content\":\"local answer\"}}") == "local answer" &&
+                AiProviderClient.ParseGeminiResponse("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini answer\"}]}}]}") == "gemini answer" &&
+                AiProviderClient.ParseOpenAiCompatibleResponse("{\"choices\":[{\"message\":{\"content\":\"groq answer\"}}]}") == "groq answer";
+            results.Add((aiResponseParsing ? "PASS" : "FAIL") + " | alternate AI response parsing | " + (aiResponseParsing ? "Ollama, Gemini, and Groq response shapes parsed" : "provider response parsing mismatch"));
+            bool dpapiSettingsRoundTrip = false;
+            try
+            {
+                string testSettings = "{\"provider\":\"Groq\",\"apiKey\":\"test-secret\"}";
+                byte[] protectedSettings = AiProviderClient.ProtectSettings(testSettings);
+                dpapiSettingsRoundTrip = Encoding.UTF8.GetString(protectedSettings) != testSettings && AiProviderClient.UnprotectSettings(protectedSettings) == testSettings;
+            }
+            catch { dpapiSettingsRoundTrip = false; }
+            results.Add((dpapiSettingsRoundTrip ? "PASS" : "FAIL") + " | AI settings DPAPI protection | " + (dpapiSettingsRoundTrip ? "per-user encrypted settings round trip" : "settings encryption round trip failed"));
+            LatencyStatistics latencyStats = LatencyStatistics.Calculate(new double?[] { 10, 20, null, 40, 50 });
+            bool robustLatencyStats = latencyStats.Count == 4 && latencyStats.Minimum == 10 && latencyStats.Median == 30 && latencyStats.P95 == 50 && latencyStats.Maximum == 50 && latencyStats.Jitter == 10;
+            results.Add((robustLatencyStats ? "PASS" : "FAIL") + " | latency percentile and jitter calculations | " + (robustLatencyStats ? "median/p95 and gap-aware jitter match known values" : "latency statistics mismatch"));
+            string statsReport = DiagnosticEngine.Analyze(new List<Sample> { HealthyWindow()[0], HealthyWindow()[1] }, AppLanguage.English);
+            bool reportIncludesStats = statsReport.IndexOf("median", StringComparison.OrdinalIgnoreCase) >= 0 && statsReport.IndexOf("p95", StringComparison.OrdinalIgnoreCase) >= 0 && statsReport.IndexOf("jitter", StringComparison.OrdinalIgnoreCase) >= 0;
+            results.Add((reportIncludesStats ? "PASS" : "FAIL") + " | local report latency statistics | " + (reportIncludesStats ? "percentiles and jitter included" : "latency statistics missing"));
+            bool rateCalculation = NetworkProbe.CalculateMegabitsPerSecond(2000000, 1000000, 1) == 8.0 &&
+                !NetworkProbe.CalculateMegabitsPerSecond(100, 200, 1).HasValue &&
+                !NetworkProbe.CalculateMegabitsPerSecond(200, 100, 0).HasValue;
+            results.Add((rateCalculation ? "PASS" : "FAIL") + " | passive network traffic rates | " + (rateCalculation ? "Mbps conversion and counter resets handled" : "traffic rate calculation mismatch"));
+            bool csvSchema = CsvLogger.HeaderMatches("\uFEFF" + "TimestampLocal,WifiState,WifiSignalPercent,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps") &&
+                !CsvLogger.HeaderMatches("TimestampLocal,WifiState,Events");
+            results.Add((csvSchema ? "PASS" : "FAIL") + " | CSV schema migration guard | " + (csvSchema ? "new schema recognized; old file will be rotated intact" : "CSV schema guard failed"));
+            bool chartRenders = false;
+            try
+            {
+                using (LatencyChartPanel chart = new LatencyChartPanel())
+                using (Bitmap bitmap = new Bitmap(500, 150))
+                {
+                    chart.Size = new Size(500, 150);
+                    chart.SetSamples(new Sample[]
+                    {
+                        new Sample { GatewayLatencyMs = 4, InternetLatencyMs = 24 },
+                        new Sample { GatewayLatencyMs = 8, InternetLatencyMs = 51 }
+                    });
+                    chart.DrawToBitmap(bitmap, new Rectangle(0, 0, 500, 150));
+                    chartRenders = true;
+                }
+            }
+            catch { chartRenders = false; }
+            results.Add((chartRenders ? "PASS" : "FAIL") + " | latency chart rendering | " + (chartRenders ? "draws gateway and Internet samples" : "chart rendering failed"));
 
             string text = String.Join(Environment.NewLine, results.ToArray());
             if (!String.IsNullOrWhiteSpace(outputPath))

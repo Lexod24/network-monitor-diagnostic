@@ -239,6 +239,8 @@ namespace NetworkMonitorApp
             double? signal = Average(samples.Where(delegate(Sample s) { return s.WifiSignalPercent.HasValue; }).Select(delegate(Sample s) { return (double)s.WifiSignalPercent.Value; }));
             double? gateway = Average(samples.Where(delegate(Sample s) { return s.GatewayLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.GatewayLatencyMs.Value; }));
             double? internet = Average(samples.Where(delegate(Sample s) { return s.InternetLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.InternetLatencyMs.Value; }));
+            double? download = Average(samples.Where(delegate(Sample s) { return s.DownloadMbps.HasValue; }).Select(delegate(Sample s) { return s.DownloadMbps.Value; }));
+            double? upload = Average(samples.Where(delegate(Sample s) { return s.UploadMbps.HasValue; }).Select(delegate(Sample s) { return s.UploadMbps.Value; }));
             double durationMinutes = samples.Count < 2 ? 0 : (samples[samples.Count - 1].Timestamp - samples[0].Timestamp).TotalMinutes;
             StringBuilder b = new StringBuilder();
             b.AppendLine("samples=" + samples.Count.ToString(CultureInfo.InvariantCulture));
@@ -253,10 +255,22 @@ namespace NetworkMonitorApp
             b.AppendLine("https_successful_endpoint_checks=" + httpsOk.ToString(CultureInfo.InvariantCulture) + "/" + httpsTotal.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("dns_successful_name_lookups=" + dnsOk.ToString(CultureInfo.InvariantCulture) + "/" + dnsTotal.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("internet_icmp_average_latency_ms=" + FormatAggregate(internet));
+            b.AppendLine("active_interface_average_download_mbps=" + FormatAggregate(download));
+            b.AppendLine("active_interface_average_upload_mbps=" + FormatAggregate(upload));
+            AppendLatencyStatistics(b, "gateway", samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; }));
+            AppendLatencyStatistics(b, "internet", samples.Select(delegate(Sample s) { return s.InternetLatencyMs; }));
             b.AppendLine(language == AppLanguage.Romanian
                 ? "Probele ICMP pot fi filtrate; DNS foloseste resolverul Windows. Acest sumar nu include SSID, adrese IP, timestampuri exacte sau continutul CSV."
                 : "ICMP probes may be filtered; DNS uses the Windows resolver. This summary excludes SSID, IP addresses, exact timestamps, and raw CSV content.");
             return b.ToString();
+        }
+
+        private static void AppendLatencyStatistics(StringBuilder summary, string prefix, IEnumerable<double?> values)
+        {
+            LatencyStatistics stats = LatencyStatistics.Calculate(values);
+            summary.AppendLine(prefix + "_icmp_successful_samples=" + stats.Count.ToString(CultureInfo.InvariantCulture));
+            summary.AppendLine(prefix + "_icmp_min_median_p95_max_ms=" + FormatAggregate(stats.Minimum) + "/" + FormatAggregate(stats.Median) + "/" + FormatAggregate(stats.P95) + "/" + FormatAggregate(stats.Maximum));
+            summary.AppendLine(prefix + "_icmp_mean_jitter_ms=" + FormatAggregate(stats.Jitter));
         }
 
         internal static string CreateCodeChallenge(string verifier)

@@ -11,24 +11,35 @@ A portable Windows desktop app that monitors connection quality and produces a t
 1. Select **Start monitoring** while the connection is behaving poorly.
 2. Leave the app running during the issue. Five seconds is the target sampling interval; the report shows the measured average interval.
 3. Select **Stop and analyze**. The window shows findings, evidence, limitations, and practical next steps. A CSV and a text report are saved locally under `%LOCALAPPDATA%\NetworkMonitor\Logs`.
-4. For an optional AI explanation, select **Continue with ChatGPT** and approve the request. The app opens the official ChatGPT sign-in in your browser. Sign in with your own account and grant the requested permission. Return to the app; after monitoring stops, it can request a plain-language explanation of the aggregated results. Use **Disconnect ChatGPT** to remove the local session and request remote revocation.
+4. The local evidence-based diagnosis is always available. For an optional AI explanation, choose **AI options**. You can use local Ollama, Gemini API, or Groq API. **Continue with ChatGPT** remains available for eligible ChatGPT accounts; it opens the official sign-in and requests separate approval.
 
-AI is optional. Without it, the complete local diagnosis still works. AI output is supplemental and may be wrong; compare it with the measurements and the deterministic local findings. Eligible ChatGPT plan access and limits belong to the signed-in user's account. This app contains no shared API key and does not charge the publisher for other users' requests.
+AI is optional. Without it, the complete local diagnosis still works. AI output is supplemental and may be wrong; compare it with the measurements and deterministic local findings. No provider keys are bundled and the publisher does not pay for other users' requests. Cloud providers require each user to supply their own key and are subject to that provider's quotas, account eligibility, data terms, and possible charges. Keys are protected with Windows DPAPI for the current Windows user. Ollama runs on the user's own computer and requires a separately installed model.
 The sign-in callback listens on `127.0.0.1`, preferring port `1455` and selecting another available port if needed. Keep the app open and finish browser sign-in within 15 minutes.
 
 ## Privacy
 
-The AI request contains only aggregated counts and averages from the session. It excludes raw CSV content, SSID, IP addresses, exact timestamps, and credentials. The app sends that summary to OpenAI only after the user signs in and approves ChatGPT plan use. OAuth tokens are stored locally protected with Windows DPAPI for the current Windows user. The app also retains the issued public client ID locally if a first token exchange must be retried. Disconnect removes the local credentials and registration ID; if remote revocation cannot be confirmed, the app says so. Network monitoring itself sends ICMP and DNS probes and small HTTPS requests to the documented endpoints below.
+AI requests contain only aggregated counts and averages from the session. They exclude raw CSV content, SSID, IP addresses, exact timestamps, and credentials. With Ollama, the summary remains on the computer. With Gemini or Groq, it is sent to the selected provider after the user configures a key. Review that provider's current data terms and quotas before use. ChatGPT access separately requires the user to sign in and approve plan use. ChatGPT OAuth tokens and cloud-provider keys are protected locally with Windows DPAPI for the current Windows user. The app also retains the issued public ChatGPT client ID locally if a first token exchange must be retried. Disconnecting ChatGPT removes its local credentials and registration ID; it does not remove the separately configured AI provider. Network monitoring itself sends ICMP and DNS probes and small HTTPS requests to the documented endpoints below.
+
+## Optional AI providers
+
+- **Local diagnosis only:** default behavior; no account, key, or AI request.
+- **Ollama:** install [Ollama for Windows](https://ollama.com/download/windows), then run `ollama run qwen3:4b` once in a terminal to download the approximately 2.5 GB model. Keep Ollama running and select `Ollama` under **AI options**. This option needs no account or API key; inference runs locally. Hardware requirements and speed vary by computer.
+- **Gemini API:** create your own key in [Google AI Studio](https://aistudio.google.com/apikey), select `Gemini API`, and use the suggested `gemini-3-flash-preview` model or another model currently available to your account. Free quotas and data handling vary by model/account; check Google's current [pricing and terms](https://ai.google.dev/gemini-api/docs/pricing).
+- **Groq API:** create your own key in [Groq Console](https://console.groq.com/keys), select `Groq API`, and use the suggested `openai/gpt-oss-20b` model or another currently available model. Limits and account terms can change; see [Groq rate limits](https://console.groq.com/docs/rate-limits).
+
+The provider selected in **AI options** is used for explanation after monitoring stops. When no alternative provider is selected, an existing ChatGPT connection can be used. No AI provider is configured by default. The app does not automatically create accounts, keys, or paid usage for the publisher.
 
 ## Measurements and diagnosis
 
 - Wi-Fi connection state and Windows-reported signal strength when available.
 - ICMP latency and rolling packet loss to the local gateway and `1.1.1.1`.
+- Live latency graph for the latest 60 samples (about five minutes), plus successful-probe minimum, median, p95, maximum, and gap-aware jitter in the final report.
+- Passive upload/download rates from the active gateway interface. They represent this computer's current traffic, not an Internet speed test or the plan's maximum bandwidth.
 - If the Internet ICMP probe does not reply, three concurrent HTTPS checks to Microsoft, Google, and Cloudflare. The app validates expected endpoint responses and rejects redirects or captive portal pages.
 - DNS lookups once a minute for three domains using the configured Windows resolver.
 - CSV events with per-endpoint results, timestamps, and rotation at 10 MB (up to 10 rotated files).
 
-The report compares gateway, Internet, HTTPS, and DNS evidence and distinguishes measured facts from likely causes. It does not claim to prove ISP or hardware faults. ICMP may be filtered or rate-limited, Wi-Fi signal may be unavailable, and DNS may use the Windows cache. Firewalls, proxies, captive portals, regional routing, or endpoint incidents can affect results.
+The report compares gateway, Internet, HTTPS, and DNS evidence and distinguishes measured facts from likely causes. The latency graph is a live view of the most recent 60 samples; session CSV files are the source for longer-term review. It does not claim to prove ISP or hardware faults. ICMP may be filtered or rate-limited, Wi-Fi signal may be unavailable, and DNS may use the Windows cache. Firewalls, proxies, captive portals, regional routing, or endpoint incidents can affect results.
 
 ## Build and test
 

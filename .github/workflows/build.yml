@@ -18,5 +18,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: NetworkMonitor-windows
-          path: dist/NetworkMonitor.exe
+          path: |
+            dist/NetworkMonitor.exe
+            dist/NetworkMonitor-Portable.zip
 
