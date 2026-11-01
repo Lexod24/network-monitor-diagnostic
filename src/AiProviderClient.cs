@@ -220,8 +220,8 @@ namespace NetworkMonitorApp
     internal sealed class AiProviderSettingsForm : Form
     {
         private readonly GlassComboBox provider;
-        private readonly TextBox model;
-        private readonly TextBox apiKey;
+        private readonly GlassTextBox model;
+        private readonly GlassTextBox apiKey;
         private readonly Label hint;
         private readonly bool romanian;
         private AiProvider previousProvider;
@@ -234,18 +234,29 @@ namespace NetworkMonitorApp
             romanian = ro;
             Text = ro ? "Setari furnizor AI" : "AI provider settings";
             StartPosition = FormStartPosition.CenterParent;
-            FormBorderStyle = FormBorderStyle.FixedDialog;
+            FormBorderStyle = FormBorderStyle.None;
             MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
-            ClientSize = new Size(560, 462);
+            ClientSize = new Size(560, 494);
             BackColor = LiquidGlassTheme.Window;
             Font = new Font("Segoe UI", 9F);
 
-            Label eyebrow = new Label { Text = ro ? "PREFERINȚE" : "PREFERENCES", Location = new Point(28, 22), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(100, 110, 123) };
-            Label title = new Label { Text = ro ? "Conectează un furnizor AI" : "Connect an AI provider", Location = new Point(26, 42), AutoSize = true, Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), ForeColor = Color.FromArgb(28, 34, 43) };
-            Label subtitle = new Label { Text = ro ? "AI-ul este opțional. Diagnosticul local funcționează și fără cont sau cheie." : "AI is optional. Local diagnosis works without an account or API key.", Location = new Point(28, 78), Size = new Size(500, 36), ForeColor = Color.FromArgb(102, 111, 123), AutoEllipsis = true };
+            Panel titleBar = new Panel { Location = Point.Empty, Size = new Size(560, 40), BackColor = Color.FromArgb(255, 12, 16, 23), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right };
+            Label chromeTitle = new Label { Text = Text, Location = new Point(17, 0), Size = new Size(470, 40), ForeColor = LiquidGlassTheme.SecondaryText, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent };
+            GlassButton closeWindow = new GlassButton { Text = "×", Location = new Point(518, 6), Size = new Size(34, 28), BackColor = Color.FromArgb(255, 29, 35, 45), ForeColor = LiquidGlassTheme.SecondaryText, Font = new Font("Segoe UI", 13F), Cursor = Cursors.Hand, AccessibleName = ro ? "Închide" : "Close" };
+            closeWindow.Click += delegate { Close(); };
+            titleBar.Controls.Add(chromeTitle);
+            titleBar.Controls.Add(closeWindow);
+            Controls.Add(titleBar);
+            MouseEventHandler dragWindow = delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) GlassWindowEffects.BeginWindowDrag(this); };
+            titleBar.MouseDown += dragWindow;
+            chromeTitle.MouseDown += dragWindow;
+
+            Label eyebrow = new Label { Text = ro ? "PREFERINȚE" : "PREFERENCES", Location = new Point(28, 54), AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(143, 156, 176) };
+            Label title = new Label { Text = ro ? "Conectează un furnizor AI" : "Connect an AI provider", Location = new Point(26, 74), AutoSize = true, Font = new Font("Segoe UI Semibold", 18F, FontStyle.Bold), ForeColor = LiquidGlassTheme.Text };
+            Label subtitle = new Label { Text = ro ? "AI-ul este opțional. Diagnosticul local funcționează și fără cont sau cheie." : "AI is optional. Local diagnosis works without an account or API key.", Location = new Point(28, 110), Size = new Size(500, 36), ForeColor = LiquidGlassTheme.SecondaryText, AutoEllipsis = true };
             Controls.Add(eyebrow); Controls.Add(title); Controls.Add(subtitle);
 
-            SoftSurfacePanel card = new SoftSurfacePanel { Location = new Point(20, 126), Size = new Size(520, 258), CornerRadius = 22, Padding = new Padding(20) };
+            SoftSurfacePanel card = new SoftSurfacePanel { Location = new Point(20, 158), Size = new Size(520, 258), CornerRadius = 22, Padding = new Padding(20) };
             Controls.Add(card);
             Label providerLabel = MakeLabel(ro ? "Furnizor" : "Provider", 20, 18);
             card.Controls.Add(providerLabel);
@@ -258,17 +269,17 @@ namespace NetworkMonitorApp
             card.Controls.Add(provider);
 
             card.Controls.Add(MakeLabel(ro ? "Model" : "Model", 20, 62));
-            model = new TextBox { Location = new Point(160, 60), Width = 318, Text = settings.Model ?? "", Font = new Font("Segoe UI", 9F), BorderStyle = BorderStyle.FixedSingle };
+            model = new GlassTextBox { Location = new Point(160, 58), Width = 318, Height = 34, Text = settings.Model ?? "", Font = new Font("Segoe UI", 9F) };
             card.Controls.Add(model);
             card.Controls.Add(MakeLabel(ro ? "Cheie API" : "API key", 20, 106));
-            apiKey = new TextBox { Location = new Point(160, 104), Width = 318, UseSystemPasswordChar = true, Text = settings.ApiKey ?? "", Font = new Font("Segoe UI", 9F), BorderStyle = BorderStyle.FixedSingle };
+            apiKey = new GlassTextBox { Location = new Point(160, 102), Width = 318, Height = 34, UseSystemPasswordChar = true, Text = settings.ApiKey ?? "", Font = new Font("Segoe UI", 9F), AccessibleName = ro ? "Cheie API" : "API key" };
             card.Controls.Add(apiKey);
 
             hint = new Label { Location = new Point(20, 148), Size = new Size(458, 80), AutoEllipsis = true, ForeColor = Color.FromArgb(91, 101, 114), Font = new Font("Segoe UI", 8.5F) };
             card.Controls.Add(hint);
-            GlassButton save = new GlassButton { Text = ro ? "Salvează" : "Save", Location = new Point(322, 404), Size = new Size(104, 36), DialogResult = DialogResult.OK, BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand };
+            GlassButton save = new GlassButton { Text = ro ? "Salvează" : "Save", Location = new Point(322, 436), Size = new Size(104, 36), DialogResult = DialogResult.OK, BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand };
             save.Click += SaveClicked;
-            GlassButton cancel = new GlassButton { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 404), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand };
+            GlassButton cancel = new GlassButton { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 436), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand };
             Controls.Add(save); Controls.Add(cancel);
             AcceptButton = save; CancelButton = cancel;
             LiquidGlassTheme.ApplyTree(this, save);

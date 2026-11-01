@@ -980,9 +980,58 @@ namespace NetworkMonitorApp
         [DllImport("gdi32.dll", SetLastError = true)]
         private static extern bool DeleteObject(IntPtr handle);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
+
+        private const int WmNcLButtonDown = 0x00A1;
+        private static readonly IntPtr HtCaption = new IntPtr(2);
+
         internal static void Attach(Form form, bool transient)
         {
+            if (transient)
+            {
+                form.SizeChanged += delegate { ApplyRoundedFormRegion(form, 18); };
+                form.Shown += delegate { ApplyRoundedFormRegion(form, 18); };
+            }
             form.Shown += delegate { Apply(form.Handle, transient); };
+        }
+
+        internal static void BeginWindowDrag(Form form)
+        {
+            if (form == null || !form.IsHandleCreated) return;
+            ReleaseCapture();
+            SendMessage(form.Handle, WmNcLButtonDown, HtCaption, IntPtr.Zero);
+        }
+
+        private static void ApplyRoundedFormRegion(Form form, int radius)
+        {
+            if (form == null || form.ClientSize.Width < 2 || form.ClientSize.Height < 2) return;
+            try
+            {
+                Rectangle bounds = new Rectangle(0, 0, form.ClientSize.Width, form.ClientSize.Height);
+                using (GraphicsPath path = RoundedPath(bounds, radius))
+                {
+                    Region old = form.Region;
+                    form.Region = new Region(path);
+                    if (old != null) old.Dispose();
+                }
+            }
+            catch { /* Native window corners remain a fallback on Windows versions that reject a custom region. */ }
+        }
+
+        private static GraphicsPath RoundedPath(Rectangle rect, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int d = Math.Max(2, Math.Min(radius * 2, Math.Min(rect.Width, rect.Height)));
+            path.AddArc(rect.Left, rect.Top, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Top, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         private static void Apply(IntPtr handle, bool transient)
@@ -1138,8 +1187,10 @@ namespace NetworkMonitorApp
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
             if (Focused || isDefault)
             {
-                Rectangle focus = Rectangle.Inflate(bounds, -5, -5);
-                ControlPaint.DrawFocusRectangle(e.Graphics, focus, textColor, Color.Transparent);
+                Rectangle focusBounds = Rectangle.Inflate(bounds, -2, -2);
+                using (GraphicsPath focusPath = RoundedPath(focusBounds, Math.Max(7, focusBounds.Height / 2)))
+                using (Pen focusRing = new Pen(Color.FromArgb(185, 143, 190, 255), 1.25F))
+                    e.Graphics.DrawPath(focusRing, focusPath);
             }
         }
 
@@ -1394,6 +1445,87 @@ namespace NetworkMonitorApp
         public event EventHandler SelectedIndexChanged { add { combo.SelectedIndexChanged += value; } remove { combo.SelectedIndexChanged -= value; } }
 
         public override string Text { get { return combo == null || combo.SelectedIndex < 0 ? base.Text : combo.GetItemText(combo.SelectedItem); } set { if (combo == null) base.Text = value; else { combo.Text = value; Invalidate(); } } }
+    }
+
+    internal sealed class GlassTextBox : UserControl
+    {
+        private readonly TextBox input;
+        private const int CornerRadius = 11;
+
+        public GlassTextBox()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.FromArgb(255, 16, 21, 30);
+            ForeColor = LiquidGlassTheme.Text;
+            Height = 36;
+            TabStop = false;
+            AccessibleRole = AccessibleRole.Text;
+            input = new TextBox
+            {
+                BorderStyle = BorderStyle.None,
+                BackColor = BackColor,
+                ForeColor = ForeColor,
+                Font = Font,
+                Location = new Point(12, 7),
+                Width = Math.Max(20, Width - 24),
+                Height = Math.Max(20, Height - 14),
+                AutoSize = false
+            };
+            input.GotFocus += delegate { Invalidate(); };
+            input.LostFocus += delegate { Invalidate(); };
+            Controls.Add(input);
+            LayoutInput();
+        }
+
+        public override string Text { get { return input == null ? base.Text : input.Text; } set { if (input == null) base.Text = value; else input.Text = value; } }
+        public bool UseSystemPasswordChar { get { return input.UseSystemPasswordChar; } set { input.UseSystemPasswordChar = value; } }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            SoftSurfacePanel parent = Parent as SoftSurfacePanel;
+            if (parent != null) parent.PaintBackgroundForChild(e.Graphics, this);
+            else base.OnPaintBackground(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle bounds = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+            using (GraphicsPath path = RoundedPath(bounds, CornerRadius))
+            using (LinearGradientBrush fill = new LinearGradientBrush(bounds, Color.FromArgb(255, 24, 31, 43), BackColor, 90F))
+            using (Pen edge = new Pen(input.Focused ? Color.FromArgb(190, 131, 181, 255) : LiquidGlassTheme.Stroke, input.Focused ? 1.5F : 1F))
+            using (Pen sheen = new Pen(Color.FromArgb(30, 255, 255, 255)))
+            {
+                e.Graphics.FillPath(fill, path);
+                e.Graphics.DrawPath(edge, path);
+                e.Graphics.DrawLine(sheen, bounds.Left + CornerRadius, bounds.Top + 1, bounds.Right - CornerRadius, bounds.Top + 1);
+            }
+        }
+
+        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); LayoutInput(); }
+        protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); if (input != null) { input.Font = Font; LayoutInput(); } }
+        protected override void OnForeColorChanged(EventArgs e) { base.OnForeColorChanged(e); if (input != null) input.ForeColor = ForeColor; }
+        protected override void OnBackColorChanged(EventArgs e) { base.OnBackColorChanged(e); if (input != null) input.BackColor = BackColor; }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); if (input != null) input.Enabled = Enabled; Invalidate(); }
+
+        private void LayoutInput()
+        {
+            if (input == null) return;
+            input.Bounds = new Rectangle(12, 6, Math.Max(20, ClientSize.Width - 24), Math.Max(20, ClientSize.Height - 12));
+        }
+
+        private static GraphicsPath RoundedPath(Rectangle rect, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int d = Math.Max(2, Math.Min(radius * 2, Math.Min(rect.Width, rect.Height)));
+            path.AddArc(rect.Left, rect.Top, d, d, 180, 90);
+            path.AddArc(rect.Right - d, rect.Top, d, d, 270, 90);
+            path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+            path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
     }
 
     internal sealed class LiquidBackdropPanel : Panel
