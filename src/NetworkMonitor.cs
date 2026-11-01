@@ -1167,10 +1167,14 @@ namespace NetworkMonitorApp
             bool pendingClientIdRetained = ChatGptPlanClient.ResolveIssuedClientId(null, "issued-client", "new-callback-client") == "issued-client" &&
                 ChatGptPlanClient.ResolveIssuedClientId("saved-client", "pending-client", "callback-client") == "saved-client";
             results.Add((pendingClientIdRetained ? "PASS" : "FAIL") + " | OAuth client registration retry | " + (pendingClientIdRetained ? "saved registration ID wins on retry" : "retry registration ID selection failed"));
-            string invalidGrantMessage = ChatGptPlanClient.BuildSignInFailureMessage("invalid_grant", "(HTTP 400; OAuth error: invalid_grant)");
+            string invalidGrantMessage = ChatGptPlanClient.BuildSignInFailureMessage("invalid_grant", "exchanging the authorization code", "(HTTP 400; OAuth error: invalid_grant)");
             bool actionableInvalidGrant = invalidGrantMessage.IndexOf("fresh sign-in", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                invalidGrantMessage.IndexOf("kept", StringComparison.OrdinalIgnoreCase) >= 0;
+                invalidGrantMessage.IndexOf("kept", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                invalidGrantMessage.IndexOf("expired or was already used", StringComparison.OrdinalIgnoreCase) < 0;
             results.Add((actionableInvalidGrant ? "PASS" : "FAIL") + " | OAuth invalid_grant recovery | " + (actionableInvalidGrant ? "retry guidance preserves registration" : "invalid_grant retry guidance missing"));
+            bool requestIdSanitized = ChatGptPlanClient.SanitizeRequestId("req_ABC-123") == "req_ABC-123" &&
+                ChatGptPlanClient.SanitizeRequestId("req_ABC;secret") == null;
+            results.Add((requestIdSanitized ? "PASS" : "FAIL") + " | OAuth request ID display | " + (requestIdSanitized ? "safe request IDs retained; other text rejected" : "request ID sanitization failed"));
             TestOidc(results);
             string summary = ChatGptPlanClient.BuildAggregatedSummary(HealthyWindow(), AppLanguage.English);
             bool sanitized = summary.IndexOf("192.0.2.45", StringComparison.Ordinal) < 0 && summary.IndexOf("MyPrivateWifi", StringComparison.Ordinal) < 0;

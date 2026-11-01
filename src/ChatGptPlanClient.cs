@@ -73,6 +73,7 @@ namespace NetworkMonitorApp
             TcpListener listener = StartLoopbackListener(out port);
             string redirectUri = "http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture) + "/auth/callback";
             Dictionary<string, string> query = new Dictionary<string, string>();
+            string requestStage = "opening the authorization page";
             query["client_id"] = previous == null && String.IsNullOrEmpty(registeredClientId) ? DynamicClientId : registeredClientId;
             query["response_type"] = "code";
             query["redirect_uri"] = redirectUri;
@@ -121,6 +122,7 @@ namespace NetworkMonitorApp
                     tokenForm["code_verifier"] = verifier;
                     tokenForm["redirect_uri"] = redirectUri;
                     tokenForm["resource"] = Resource;
+                    requestStage = "exchanging the authorization code";
                     Dictionary<string, object> token = (Dictionary<string, object>)Json.DeserializeObject(PostForm(TokenEndpoint, tokenForm));
                     string accessToken = GetString(token, "access_token");
                     string refreshToken = GetString(token, "refresh_token");
@@ -131,6 +133,7 @@ namespace NetworkMonitorApp
                     if (!HasScope(scopes, RequiredScope))
                         throw new InvalidOperationException("The ChatGPT plan permission was not approved. Local diagnosis is still available.");
 
+                    requestStage = "validating the identity token";
                     Dictionary<string, object> claims = OidcTokenValidator.Validate(idToken, GetJson(JwksEndpoint), issuedClientId, nonce, DateTime.UtcNow);
                     string subject = GetString(claims, "sub");
                     if (previous != null && subject != previous.Subject)
@@ -155,7 +158,7 @@ namespace NetworkMonitorApp
             {
                 string oauthError = GetOAuthErrorCode(ex);
                 string httpStatus = GetHttpStatus(ex, oauthError);
-                throw new InvalidOperationException(BuildSignInFailureMessage(oauthError, httpStatus));
+                throw new InvalidOperationException(BuildSignInFailureMessage(oauthError, requestStage, httpStatus));
             }
             finally
             {
@@ -418,11 +421,11 @@ namespace NetworkMonitorApp
             return callbackClientId;
         }
 
-        internal static string BuildSignInFailureMessage(string oauthError, string httpStatus)
+        internal static string BuildSignInFailureMessage(string oauthError, string requestStage, string httpStatus)
         {
             if (oauthError == "invalid_grant")
-                return "The ChatGPT sign-in code expired or was already used. The app registration has been kept; click Continue with ChatGPT to start a fresh sign-in. " + httpStatus;
-            return "Could not complete ChatGPT sign-in. Check the Internet connection and try again. " + httpStatus;
+                return "OpenAI rejected the authorization code (invalid_grant) while " + requestStage + ". The issued client ID was kept locally. Start a fresh sign-in once; if the error repeats, contact OpenAI Support and include the request ID shown here. " + httpStatus;
+            return "Could not complete ChatGPT sign-in while " + requestStage + ". Check the Internet connection and try again. " + httpStatus;
         }
 
         private static void ClearRegisteredClientId()
@@ -736,7 +739,16 @@ namespace NetworkMonitorApp
             if (response == null) return "(network error)";
             string result = "(HTTP " + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture);
             if (!String.IsNullOrEmpty(oauthError)) result += "; OAuth error: " + oauthError;
+            string requestId = SanitizeRequestId(response.Headers["x-request-id"]);
+            if (!String.IsNullOrEmpty(requestId)) result += "; OpenAI request ID: " + requestId;
             return result + ")";
+        }
+
+        internal static string SanitizeRequestId(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value) || value.Length > 100 ||
+                !value.All(delegate(char c) { return Char.IsLetterOrDigit(c) || c == '-' || c == '_'; })) return null;
+            return value;
         }
 
         private static string SafeMessage(string value)
