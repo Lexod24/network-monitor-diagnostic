@@ -2214,7 +2214,9 @@ namespace NetworkMonitorApp
         private readonly List<Sample> samples = new List<Sample>();
         private System.Threading.Timer timer;
         private int sampling;
+        private long lastStartStopActionTicks;
         private volatile bool monitoring;
+        private bool awaitingInitialSample;
         private DateTimeOffset nextDnsCheck;
 
         public MainForm()
@@ -2411,8 +2413,9 @@ namespace NetworkMonitorApp
         {
             Text = Localization.Get(language, "AppTitle");
             headingLabel.Text = Localization.Get(language, "Heading");
-            startStopButton.Text = Localization.Get(language, monitoring ? "Stop" : (samples.Count > 0 ? "Restart" : "Start"));
-            startStopButton.BackColor = monitoring ? LiquidGlassTheme.Danger : LiquidGlassTheme.Sapphire;
+            startStopButton.Text = Localization.Get(language, monitoring ? (awaitingInitialSample ? "StartingMonitoring" : "Stop") : (samples.Count > 0 ? "Restart" : "Start"));
+            startStopButton.Enabled = !awaitingInitialSample;
+            startStopButton.BackColor = monitoring && !awaitingInitialSample ? LiquidGlassTheme.Danger : LiquidGlassTheme.Sapphire;
             startStopButton.ForeColor = Color.FromArgb(9, 15, 24);
             statusLabel.ForeColor = monitoring ? LiquidGlassTheme.Good : LiquidGlassTheme.Text;
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
@@ -2552,9 +2555,12 @@ namespace NetworkMonitorApp
 
         private void StartStopClicked(object sender, EventArgs e)
         {
+            long now = Stopwatch.GetTimestamp();
+            if (!MonitoringSessionPolicy.ShouldAcceptToggle(lastStartStopActionTicks, now, Stopwatch.Frequency, SystemInformation.DoubleClickTime)) return;
+            lastStartStopActionTicks = now;
             if (!monitoring)
                 StartMonitoring();
-            else
+            else if (MonitoringSessionPolicy.CanStop(monitoring, !awaitingInitialSample))
                 StopMonitoring();
         }
 
@@ -2628,8 +2634,10 @@ namespace NetworkMonitorApp
             ResetMetrics();
             nextDnsCheck = DateTimeOffset.MinValue;
             monitoring = true;
-            startStopButton.Text = Localization.Get(language, "Stop");
-            startStopButton.BackColor = LiquidGlassTheme.Danger;
+            awaitingInitialSample = true;
+            startStopButton.Enabled = false;
+            startStopButton.Text = Localization.Get(language, "StartingMonitoring");
+            startStopButton.BackColor = LiquidGlassTheme.Sapphire;
             statusLabel.ForeColor = LiquidGlassTheme.Good;
             statusLabel.Text = Localization.Get(language, "Running");
             overviewSummary.Text = language == AppLanguage.Romanian
@@ -2642,6 +2650,7 @@ namespace NetworkMonitorApp
         private void StopMonitoring()
         {
             monitoring = false;
+            awaitingInitialSample = false;
             if (timer != null)
             {
                 timer.Dispose();
@@ -2749,6 +2758,13 @@ namespace NetworkMonitorApp
 
         private void AddSampleToUi(Sample sample)
         {
+            if (awaitingInitialSample && monitoring)
+            {
+                awaitingInitialSample = false;
+                startStopButton.Text = Localization.Get(language, "Stop");
+                startStopButton.BackColor = LiquidGlassTheme.Danger;
+                startStopButton.Enabled = true;
+            }
             UpdateMetricValues(sample);
             statusLabel.Text = ConnectivityLabel(sample.Connectivity, language);
             overviewSummary.Text = NextStepSummary(sample, language);
@@ -2934,11 +2950,33 @@ namespace NetworkMonitorApp
         }
     }
 
+    internal static class MonitoringSessionPolicy
+    {
+        internal static bool CanStop(bool isMonitoring, bool initialSampleCaptured)
+        {
+            return isMonitoring && initialSampleCaptured;
+        }
+
+        internal static bool ShouldAcceptToggle(long previousActionTicks, long currentActionTicks, long frequency, int doubleClickMilliseconds)
+        {
+            if (previousActionTicks <= 0 || currentActionTicks < previousActionTicks || frequency <= 0) return true;
+            double minimumInterval = frequency * Math.Max(0, doubleClickMilliseconds) / 1000.0;
+            return currentActionTicks - previousActionTicks >= minimumInterval;
+        }
+    }
+
     internal static class SelfTests
     {
         public static int Run(string outputPath)
         {
             List<string> results = new List<string>();
+            bool stopGate = !MonitoringSessionPolicy.CanStop(true, false) &&
+                MonitoringSessionPolicy.CanStop(true, true) && !MonitoringSessionPolicy.CanStop(false, true);
+            bool duplicateClickGate = MonitoringSessionPolicy.ShouldAcceptToggle(0, 100, 1000, 500) &&
+                !MonitoringSessionPolicy.ShouldAcceptToggle(1000, 1400, 1000, 500) &&
+                MonitoringSessionPolicy.ShouldAcceptToggle(1000, 1600, 1000, 500);
+            results.Add((stopGate && duplicateClickGate ? "PASS" : "FAIL") + " | monitoring start cannot immediately stop into an empty diagnosis | " +
+                (stopGate && duplicateClickGate ? "first sample gate and double-click debounce prevent an empty report" : "startup protection mismatch"));
             Test(results, "healthy window", HealthyWindow(), "Nu s-au detectat intreruperi");
             Test(results, "wifi disconnect", WindowWith(delegate(Sample s) { s.WifiState = "Disconnected"; }), "Wi-Fi");
             Test(results, "weak signal", WindowWith(delegate(Sample s) { s.WifiSignalPercent = 20; }), "Semnal Wi-Fi");

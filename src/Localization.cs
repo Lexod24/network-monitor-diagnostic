@@ -18,6 +18,7 @@ namespace NetworkMonitorApp
                 case "English": return "English";
                 case "Romanian": return "Romana";
                 case "Start": return ro ? "Porneste monitorizarea" : "Start monitoring";
+                case "StartingMonitoring": return ro ? "Pornesc monitorizarea..." : "Starting probes...";
                 case "Stop": return ro ? "Opreste si analizeaza" : "Stop and analyze";
                 case "Restart": return ro ? "Porneste din nou" : "Start again";
                 case "Stopped": return ro ? "Oprit - datele raman locale" : "Stopped - data stays local";
