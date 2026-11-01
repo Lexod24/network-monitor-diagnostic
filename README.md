@@ -18,7 +18,7 @@ The sign-in callback listens on `127.0.0.1`, preferring port `1455` and selectin
 
 ## Privacy
 
-The AI request contains only aggregated counts and averages from the session. It excludes raw CSV content, SSID, IP addresses, exact timestamps, and credentials. The app sends that summary to OpenAI only after the user signs in and approves ChatGPT plan use. OAuth tokens are stored locally protected with Windows DPAPI for the current Windows user. Disconnect removes the local credentials; if remote revocation cannot be confirmed, the app says so. Network monitoring itself sends ICMP and DNS probes and small HTTPS requests to the documented endpoints below.
+The AI request contains only aggregated counts and averages from the session. It excludes raw CSV content, SSID, IP addresses, exact timestamps, and credentials. The app sends that summary to OpenAI only after the user signs in and approves ChatGPT plan use. OAuth tokens are stored locally protected with Windows DPAPI for the current Windows user. The app also retains the issued public client ID locally if a first token exchange must be retried. Disconnect removes the local credentials and registration ID; if remote revocation cannot be confirmed, the app says so. Network monitoring itself sends ICMP and DNS probes and small HTTPS requests to the documented endpoints below.
 
 ## Measurements and diagnosis
 

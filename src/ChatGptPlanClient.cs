@@ -58,10 +58,12 @@ namespace NetworkMonitorApp
 
         private static string CredentialsPath { get { return Path.Combine(StorageDirectory, "chatgpt-session.bin"); } }
         private static string HostIdPath { get { return Path.Combine(StorageDirectory, "chatgpt-host-id.txt"); } }
+        private static string RegisteredClientIdPath { get { return Path.Combine(StorageDirectory, "chatgpt-client-id.txt"); } }
 
         public static string Connect()
         {
             ChatGptCredentials previous = LoadCredentials();
+            string registeredClientId = previous == null ? LoadRegisteredClientId() : previous.ClientId;
             string hostId = LoadOrCreateHostId();
             string state = RandomBase64Url(32);
             string nonce = RandomBase64Url(32);
@@ -71,7 +73,7 @@ namespace NetworkMonitorApp
             TcpListener listener = StartLoopbackListener(out port);
             string redirectUri = "http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture) + "/auth/callback";
             Dictionary<string, string> query = new Dictionary<string, string>();
-            query["client_id"] = previous == null ? DynamicClientId : previous.ClientId;
+            query["client_id"] = previous == null && String.IsNullOrEmpty(registeredClientId) ? DynamicClientId : registeredClientId;
             query["response_type"] = "code";
             query["redirect_uri"] = redirectUri;
             query["scope"] = Scope;
@@ -81,9 +83,9 @@ namespace NetworkMonitorApp
             query["code_challenge_method"] = "S256";
             query["code_challenge"] = challenge;
             query["ext_agent_host_id"] = hostId;
-            if (previous == null)
+            if (previous == null && String.IsNullOrEmpty(registeredClientId))
                 query["agent_name_hint"] = "Network Monitor Diagnostic";
-            else
+            else if (previous != null)
             {
                 query["id_token_hint"] = previous.IdToken;
             }
@@ -103,13 +105,14 @@ namespace NetworkMonitorApp
                     }
                     if (!callback.ContainsKey("code")) throw new InvalidOperationException("ChatGPT did not return an authorization code.");
 
-                    string issuedClientId = previous == null
-                        ? (callback.ContainsKey("client_id") ? callback["client_id"] : null)
-                        : previous.ClientId;
+                    string issuedClientId = ResolveIssuedClientId(previous == null ? null : previous.ClientId,
+                        registeredClientId, callback.ContainsKey("client_id") ? callback["client_id"] : null);
                     if (String.IsNullOrWhiteSpace(issuedClientId) || issuedClientId == DynamicClientId)
                         throw new InvalidOperationException("OpenAI did not issue a client ID for this app registration.");
                     if (previous != null && callback.ContainsKey("client_id") && callback["client_id"] != previous.ClientId)
                         throw new InvalidOperationException("The returned ChatGPT registration did not match the selected account.");
+                    if (previous == null && String.IsNullOrEmpty(registeredClientId))
+                        SaveRegisteredClientId(issuedClientId);
 
                     Dictionary<string, string> tokenForm = new Dictionary<string, string>();
                     tokenForm["grant_type"] = "authorization_code";
@@ -144,12 +147,15 @@ namespace NetworkMonitorApp
                         ExpiresUtc = DateTime.UtcNow.AddSeconds(Math.Max(60, expiresIn))
                     };
                     SaveCredentials(credentials);
+                    ClearRegisteredClientId();
                     return "ChatGPT is connected. The app will use this account for AI explanations after each monitoring session.";
                 }
             }
             catch (WebException ex)
             {
-                throw new InvalidOperationException("Could not complete ChatGPT sign-in. Check the Internet connection and try again. " + GetHttpStatus(ex));
+                string oauthError = GetOAuthErrorCode(ex);
+                string httpStatus = GetHttpStatus(ex, oauthError);
+                throw new InvalidOperationException(BuildSignInFailureMessage(oauthError, httpStatus));
             }
             finally
             {
@@ -181,6 +187,7 @@ namespace NetworkMonitorApp
             }
             lock (Gate) cached = null;
             if (File.Exists(CredentialsPath)) File.Delete(CredentialsPath);
+            ClearRegisteredClientId();
             return revoked
                 ? "Signed out on this device and the ChatGPT session was revoked."
                 : "Signed out on this device. Remote revocation could not be confirmed; remove this app in ChatGPT Settings if you want to revoke access.";
@@ -375,6 +382,53 @@ namespace NetworkMonitorApp
             string value = "urn:uuid:" + Guid.NewGuid().ToString("D");
             File.WriteAllText(HostIdPath, value, new UTF8Encoding(false));
             return value;
+        }
+
+        private static string LoadRegisteredClientId()
+        {
+            try
+            {
+                if (!File.Exists(RegisteredClientIdPath)) return null;
+                string value = File.ReadAllText(RegisteredClientIdPath).Trim();
+                return IsValidIssuedClientId(value) ? value : null;
+            }
+            catch { return null; }
+        }
+
+        private static void SaveRegisteredClientId(string clientId)
+        {
+            if (!IsValidIssuedClientId(clientId)) throw new InvalidOperationException("OpenAI returned an invalid app registration ID.");
+            Directory.CreateDirectory(StorageDirectory);
+            string temp = RegisteredClientIdPath + ".tmp";
+            File.WriteAllText(temp, clientId, new UTF8Encoding(false));
+            if (File.Exists(RegisteredClientIdPath)) File.Replace(temp, RegisteredClientIdPath, null);
+            else File.Move(temp, RegisteredClientIdPath);
+        }
+
+        private static bool IsValidIssuedClientId(string value)
+        {
+            return !String.IsNullOrWhiteSpace(value) && value.Length <= 256 && value != DynamicClientId &&
+                value.All(delegate(char c) { return Char.IsLetterOrDigit(c) || c == '_' || c == '-' || c == '.'; });
+        }
+
+        internal static string ResolveIssuedClientId(string savedClientId, string pendingClientId, string callbackClientId)
+        {
+            if (!String.IsNullOrEmpty(savedClientId)) return savedClientId;
+            if (!String.IsNullOrEmpty(pendingClientId)) return pendingClientId;
+            return callbackClientId;
+        }
+
+        internal static string BuildSignInFailureMessage(string oauthError, string httpStatus)
+        {
+            if (oauthError == "invalid_grant")
+                return "The ChatGPT sign-in code expired or was already used. The app registration has been kept; click Continue with ChatGPT to start a fresh sign-in. " + httpStatus;
+            return "Could not complete ChatGPT sign-in. Check the Internet connection and try again. " + httpStatus;
+        }
+
+        private static void ClearRegisteredClientId()
+        {
+            try { if (File.Exists(RegisteredClientIdPath)) File.Delete(RegisteredClientIdPath); } catch { }
+            try { if (File.Exists(RegisteredClientIdPath + ".tmp")) File.Delete(RegisteredClientIdPath + ".tmp"); } catch { }
         }
 
         private static TcpListener StartLoopbackListener(out int port)
@@ -657,10 +711,32 @@ namespace NetworkMonitorApp
             return diff == 0;
         }
 
-        private static string GetHttpStatus(WebException exception)
+        private static string GetOAuthErrorCode(WebException exception)
         {
             HttpWebResponse response = exception.Response as HttpWebResponse;
-            return response == null ? "(network error)" : "(HTTP " + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture) + ")";
+            if (response == null) return null;
+            try
+            {
+                using (Stream stream = response.GetResponseStream())
+                using (StreamReader reader = new StreamReader(stream))
+                {
+                    Dictionary<string, object> body = Json.DeserializeObject(reader.ReadToEnd()) as Dictionary<string, object>;
+                    string code = GetString(body, "error");
+                    if (String.IsNullOrEmpty(code) || code.Length > 64 ||
+                        !code.All(delegate(char c) { return Char.IsLetterOrDigit(c) || c == '_' || c == '-'; })) return null;
+                    return code;
+                }
+            }
+            catch { return null; }
+        }
+
+        private static string GetHttpStatus(WebException exception, string oauthError)
+        {
+            HttpWebResponse response = exception.Response as HttpWebResponse;
+            if (response == null) return "(network error)";
+            string result = "(HTTP " + ((int)response.StatusCode).ToString(CultureInfo.InvariantCulture);
+            if (!String.IsNullOrEmpty(oauthError)) result += "; OAuth error: " + oauthError;
+            return result + ")";
         }
 
         private static string SafeMessage(string value)
