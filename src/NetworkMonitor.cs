@@ -875,7 +875,7 @@ namespace NetworkMonitorApp
         internal static readonly Color Warning = Color.FromArgb(242, 190, 98);
         internal static readonly Color Danger = Color.FromArgb(255, 114, 122);
 
-        internal static void ApplyTree(Control root, Button primaryButton)
+        internal static void ApplyTree(Control root, GlassButton primaryButton)
         {
             foreach (Control control in root.Controls)
             {
@@ -884,27 +884,18 @@ namespace NetworkMonitorApp
                     control.ForeColor = control.Font.Size <= 9.5F ? MutedText : Text;
                     control.BackColor = Color.Transparent;
                 }
-                else if (control is Button)
+                else if (control is GlassButton)
                 {
-                    Button button = (Button)control;
-                    button.FlatStyle = FlatStyle.Flat;
-                    button.UseVisualStyleBackColor = false;
-                    button.FlatAppearance.BorderColor = Stroke;
-                    button.FlatAppearance.BorderSize = button is GlassButton ? 0 : 1;
+                    GlassButton button = (GlassButton)control;
                     if (Object.ReferenceEquals(button, primaryButton))
                     {
                         button.BackColor = Sapphire;
                         button.ForeColor = Color.FromArgb(9, 15, 24);
-                        button.FlatAppearance.BorderColor = Color.FromArgb(145, 197, 255);
-                        button.FlatAppearance.MouseOverBackColor = SapphireHover;
-                        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(102, 158, 232);
                     }
                     else
                     {
                         button.BackColor = GlassInset;
                         button.ForeColor = Text;
-                        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(255, 43, 54, 70);
-                        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(255, 51, 66, 86);
                     }
                 }
                 else if (control is ComboBox || control is TextBox)
@@ -927,7 +918,11 @@ namespace NetworkMonitorApp
                     data.RowHeadersDefaultCellStyle.BackColor = WindowRaised;
                     data.RowHeadersDefaultCellStyle.ForeColor = MutedText;
                 }
-                else if (control is Panel && control.Dock == DockStyle.Top || control is FlowLayoutPanel)
+                else if (control is TableLayoutPanel)
+                {
+                    control.BackColor = Color.Transparent;
+                }
+                else if ((control is Panel && control.Dock == DockStyle.Top) || control is FlowLayoutPanel)
                 {
                     control.BackColor = WindowRaised;
                 }
@@ -949,11 +944,41 @@ namespace NetworkMonitorApp
         private const int DwmsbtMainWindow = 2;
         private const int DwmsbtTransientWindow = 3;
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRect { public int Left; public int Top; public int Right; public int Bottom; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ComboBoxInfo
+        {
+            public int Size;
+            public NativeRect ItemRect;
+            public NativeRect ButtonRect;
+            public uint ButtonState;
+            public IntPtr ComboHandle;
+            public IntPtr ItemHandle;
+            public IntPtr ListHandle;
+        }
+
         [DllImport("dwmapi.dll", PreserveSig = true)]
         private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int valueSize);
 
         [DllImport("uxtheme.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
         private static extern int SetWindowTheme(IntPtr hwnd, string appName, string idList);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetComboBoxInfo(IntPtr hwndCombo, ref ComboBoxInfo info);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern IntPtr CreateRoundRectRgn(int left, int top, int right, int bottom, int width, int height);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern int SetWindowRgn(IntPtr hwnd, IntPtr region, bool redraw);
+
+        [DllImport("gdi32.dll", SetLastError = true)]
+        private static extern bool DeleteObject(IntPtr handle);
 
         internal static void Attach(Form form, bool transient)
         {
@@ -972,6 +997,26 @@ namespace NetworkMonitorApp
                 DwmSetWindowAttribute(handle, DwmwaSystemBackdropType, ref backdrop, sizeof(int));
             }
             catch { /* DWM materials are optional; the painted glass theme remains available. */ }
+        }
+
+        internal static void ApplyRoundedComboPopup(IntPtr comboHandle)
+        {
+            try
+            {
+                ComboBoxInfo info = new ComboBoxInfo();
+                info.Size = Marshal.SizeOf(typeof(ComboBoxInfo));
+                if (!GetComboBoxInfo(comboHandle, ref info) || info.ListHandle == IntPtr.Zero) return;
+                int corners = DwmwcpRound;
+                DwmSetWindowAttribute(info.ListHandle, DwmwaWindowCornerPreference, ref corners, sizeof(int));
+                NativeRect rect;
+                if (!GetWindowRect(info.ListHandle, out rect)) return;
+                int width = Math.Max(1, rect.Right - rect.Left);
+                int height = Math.Max(1, rect.Bottom - rect.Top);
+                IntPtr region = CreateRoundRectRgn(0, 0, width + 1, height + 1, 20, 20);
+                if (region == IntPtr.Zero) return;
+                if (SetWindowRgn(info.ListHandle, region, true) == 0) DeleteObject(region);
+            }
+            catch { /* Rounded popup corners are cosmetic; keep the native list usable on older Windows. */ }
         }
 
         internal static void ApplyDarkScrollbars(Control root)
@@ -993,30 +1038,82 @@ namespace NetworkMonitorApp
         }
     }
 
-    internal sealed class GlassButton : Button
+    internal sealed class GlassButton : Control, IButtonControl
     {
         private bool hovering;
+        private bool pressed;
+        private bool isDefault;
+        private DialogResult dialogResult;
+
+        public DialogResult DialogResult { get { return dialogResult; } set { dialogResult = value; } }
 
         public GlassButton()
         {
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-            FlatStyle = FlatStyle.Flat;
-            FlatAppearance.BorderSize = 0;
-            UseVisualStyleBackColor = false;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable | ControlStyles.UserMouse | ControlStyles.SupportsTransparentBackColor, true);
+            TabStop = true;
+            AccessibleRole = AccessibleRole.PushButton;
+            Font = new Font("Segoe UI", 9F);
+            Cursor = Cursors.Hand;
         }
 
         protected override void OnMouseEnter(EventArgs e) { hovering = true; Invalidate(); base.OnMouseEnter(e); }
-        protected override void OnMouseLeave(EventArgs e) { hovering = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseLeave(EventArgs e) { hovering = false; pressed = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left && Enabled) { pressed = true; Focus(); Invalidate(); } base.OnMouseDown(e); }
+        protected override void OnMouseUp(MouseEventArgs e) { bool click = pressed && e.Button == MouseButtons.Left && ClientRectangle.Contains(e.Location); pressed = false; Invalidate(); base.OnMouseUp(e); if (click) PerformClick(); }
         protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
         protected override void OnBackColorChanged(EventArgs e) { Invalidate(); base.OnBackColorChanged(e); }
+        protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); UpdateRoundedRegion(); }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (Enabled && (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter)) { pressed = true; Invalidate(); e.Handled = true; e.SuppressKeyPress = true; }
+            base.OnKeyDown(e);
+        }
+
+        protected override void OnKeyUp(KeyEventArgs e)
+        {
+            bool click = pressed && Enabled && (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter);
+            pressed = false;
+            Invalidate();
+            base.OnKeyUp(e);
+            if (click) PerformClick();
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            Form form = FindForm();
+            if (form != null && DialogResult != DialogResult.None) form.DialogResult = DialogResult;
+        }
+
+        public void NotifyDefault(bool value) { isDefault = value; Invalidate(); }
+        public void PerformClick() { if (Enabled && CanSelect) { Focus(); OnClick(EventArgs.Empty); } }
+
+        private void UpdateRoundedRegion()
+        {
+            if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+            int radius = Math.Max(8, ClientSize.Height / 2);
+            using (GraphicsPath path = RoundedPath(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height), radius))
+            {
+                Region old = Region;
+                Region = new Region(path);
+                if (old != null) old.Dispose();
+            }
+        }
 
         protected override void OnPaintBackground(PaintEventArgs e)
         {
+            SoftSurfacePanel glassParent = Parent as SoftSurfacePanel;
+            if (glassParent != null)
+            {
+                glassParent.PaintBackgroundForChild(e.Graphics, this);
+                return;
+            }
+
             Control ancestor = Parent;
             while (ancestor != null && ancestor.BackColor.A == 0) ancestor = ancestor.Parent;
             Color surface = ancestor == null ? LiquidGlassTheme.Window : ancestor.BackColor;
-            using (SolidBrush brush = new SolidBrush(surface))
-                e.Graphics.FillRectangle(brush, ClientRectangle);
+            using (SolidBrush brush = new SolidBrush(surface)) e.Graphics.FillRectangle(brush, ClientRectangle);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1027,9 +1124,9 @@ namespace NetworkMonitorApp
             int radius = Math.Min(15, Math.Max(8, bounds.Height / 2));
             using (GraphicsPath path = RoundedPath(bounds, radius))
             using (LinearGradientBrush fill = new LinearGradientBrush(bounds,
-                Enabled ? (hovering ? Lighten(BackColor, 12) : BackColor) : Color.FromArgb(255, 33, 37, 45),
-                Enabled ? (hovering ? BackColor : Darken(BackColor, 8)) : Color.FromArgb(255, 25, 29, 36), 90F))
-            using (Pen edge = new Pen(Enabled ? (BackColor == LiquidGlassTheme.Sapphire || BackColor == LiquidGlassTheme.SapphireHover ? Color.FromArgb(145, 197, 255) : LiquidGlassTheme.Stroke) : Color.FromArgb(50, 160, 170, 185)))
+                Enabled ? (pressed ? Darken(BackColor, 12) : (hovering ? Lighten(BackColor, 12) : BackColor)) : Color.FromArgb(255, 33, 37, 45),
+                Enabled ? (hovering && !pressed ? BackColor : Darken(BackColor, 8)) : Color.FromArgb(255, 25, 29, 36), 90F))
+            using (Pen edge = new Pen(Enabled ? (BackColor == LiquidGlassTheme.Sapphire || BackColor == LiquidGlassTheme.SapphireHover ? Color.FromArgb(145, 197, 255) : LiquidGlassTheme.Stroke) : Color.FromArgb(50, 160, 170, 185), isDefault ? 1.5F : 1F))
             using (Pen sheen = new Pen(Color.FromArgb(34, 255, 255, 255)))
             {
                 e.Graphics.FillPath(fill, path);
@@ -1039,7 +1136,7 @@ namespace NetworkMonitorApp
             Color textColor = Enabled ? ForeColor : LiquidGlassTheme.MutedText;
             TextRenderer.DrawText(e.Graphics, Text, Font, bounds, textColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
-            if (Focused && ShowFocusCues)
+            if (Focused || isDefault)
             {
                 Rectangle focus = Rectangle.Inflate(bounds, -5, -5);
                 ControlPaint.DrawFocusRectangle(e.Graphics, focus, textColor, Color.Transparent);
@@ -1141,21 +1238,99 @@ namespace NetworkMonitorApp
     internal sealed class GlassComboBox : UserControl
     {
         private readonly ComboBox combo;
-        private readonly Panel arrow;
+        private const int CornerRadius = 10;
 
         public GlassComboBox()
         {
-            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            SetStyle(ControlStyles.Selectable, true);
+            TabStop = true;
+            AccessibleRole = AccessibleRole.ComboBox;
+            AccessibleName = "Language";
             BackColor = Color.FromArgb(255, 20, 26, 36);
             ForeColor = LiquidGlassTheme.Text;
             combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, DrawMode = DrawMode.OwnerDrawFixed, FlatStyle = FlatStyle.Flat, IntegralHeight = false, ItemHeight = 22, BackColor = BackColor, ForeColor = ForeColor };
             combo.DrawItem += DrawGlassItem;
+            combo.Visible = false;
+            combo.DropDown += delegate
+            {
+                combo.Region = null;
+                try { BeginInvoke(new MethodInvoker(delegate { GlassWindowEffects.ApplyRoundedComboPopup(combo.Handle); })); }
+                catch { /* A native popup still opens even if Windows cannot apply its optional corner region. */ }
+            };
+            combo.DropDownClosed += delegate { combo.Visible = false; Focus(); Invalidate(); };
+            combo.SelectedIndexChanged += delegate { Invalidate(); };
             Controls.Add(combo);
-            arrow = new Panel { Cursor = Cursors.Hand, BackColor = Color.FromArgb(255, 24, 31, 43) };
-            arrow.Paint += PaintArrow;
-            arrow.Click += delegate { if (Enabled) combo.DroppedDown = !combo.DroppedDown; };
-            Controls.Add(arrow);
             LayoutChildren();
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Control ancestor = Parent;
+            while (ancestor != null && ancestor.BackColor.A == 0) ancestor = ancestor.Parent;
+            Color surface = ancestor == null ? LiquidGlassTheme.Window : ancestor.BackColor;
+            using (SolidBrush brush = new SolidBrush(surface)) e.Graphics.FillRectangle(brush, ClientRectangle);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle bounds = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
+            using (GraphicsPath path = RoundedPath(bounds, CornerRadius))
+            using (SolidBrush fill = new SolidBrush(BackColor))
+            using (Pen edge = new Pen(LiquidGlassTheme.Stroke))
+            using (Pen sheen = new Pen(LiquidGlassTheme.Highlight))
+            using (Pen divider = new Pen(Color.FromArgb(48, 221, 233, 249)))
+            using (Pen chevron = new Pen(Enabled ? LiquidGlassTheme.SecondaryText : LiquidGlassTheme.MutedText, 1.6F))
+            {
+                e.Graphics.FillPath(fill, path);
+                e.Graphics.DrawPath(edge, path);
+                e.Graphics.DrawLine(sheen, bounds.Left + CornerRadius, bounds.Top + 1, bounds.Right - CornerRadius, bounds.Top + 1);
+                int arrowX = bounds.Right - 30;
+                int centerY = bounds.Height / 2;
+                e.Graphics.DrawLine(divider, arrowX, 6, arrowX, bounds.Bottom - 6);
+                e.Graphics.DrawLine(chevron, arrowX + 11, centerY - 2, arrowX + 15, centerY + 2);
+                e.Graphics.DrawLine(chevron, arrowX + 15, centerY + 2, arrowX + 19, centerY - 2);
+            }
+            string selectedText = combo.SelectedIndex >= 0 ? combo.GetItemText(combo.SelectedItem) : Text;
+            Rectangle textBounds = new Rectangle(13, 1, Math.Max(1, ClientSize.Width - 49), ClientSize.Height - 2);
+            TextRenderer.DrawText(e.Graphics, selectedText, Font, textBounds,
+                Enabled ? ForeColor : LiquidGlassTheme.MutedText,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            OpenDropDown();
+        }
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter || e.KeyCode == Keys.Down)
+            {
+                OpenDropDown();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
+            base.OnKeyDown(e);
+        }
+
+        protected override bool IsInputKey(Keys keyData)
+        {
+            if (keyData == Keys.Space || keyData == Keys.Enter || keyData == Keys.Down) return true;
+            return base.IsInputKey(keyData);
+        }
+
+        private void OpenDropDown()
+        {
+            if (!Enabled || combo.Items.Count == 0 || combo.DroppedDown) return;
+            combo.Bounds = ClientRectangle;
+            combo.Visible = true;
+            combo.BringToFront();
+            combo.Focus();
+            combo.DroppedDown = true;
         }
 
         private static void DrawGlassItem(object sender, DrawItemEventArgs e)
@@ -1172,35 +1347,45 @@ namespace NetworkMonitorApp
             if ((e.State & DrawItemState.Focus) == DrawItemState.Focus) e.DrawFocusRectangle();
         }
 
-        private void PaintArrow(object sender, PaintEventArgs e)
-        {
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            int cx = arrow.ClientSize.Width / 2;
-            int cy = arrow.ClientSize.Height / 2;
-            using (Pen divider = new Pen(Color.FromArgb(48, 221, 233, 249)))
-            using (Pen chevron = new Pen(Enabled ? LiquidGlassTheme.SecondaryText : LiquidGlassTheme.MutedText, 1.6F))
-            {
-                e.Graphics.DrawLine(divider, 0, 5, 0, Math.Max(5, arrow.Height - 6));
-                e.Graphics.DrawLine(chevron, cx - 4, cy - 2, cx, cy + 2);
-                e.Graphics.DrawLine(chevron, cx, cy + 2, cx + 4, cy - 2);
-            }
-        }
-
         private void LayoutChildren()
         {
-            if (combo == null || arrow == null) return;
-            combo.Bounds = new Rectangle(0, 0, ClientSize.Width, ClientSize.Height);
-            arrow.Bounds = new Rectangle(Math.Max(0, ClientSize.Width - 30), 0, Math.Min(30, ClientSize.Width), ClientSize.Height);
-            arrow.BringToFront();
+            if (combo == null) return;
+            combo.Bounds = ClientRectangle;
+            combo.Visible = false;
+            UpdateRoundedRegion();
+        }
+
+        private static GraphicsPath RoundedPath(Rectangle rect, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int diameter = Math.Max(2, Math.Min(radius * 2, Math.Min(rect.Width, rect.Height)));
+            path.AddArc(rect.Left, rect.Top, diameter, diameter, 180, 90);
+            path.AddArc(rect.Right - diameter, rect.Top, diameter, diameter, 270, 90);
+            path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(rect.Left, rect.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
         }
 
         protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); LayoutChildren(); }
         protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); if (combo != null) combo.Font = Font; }
-        protected override void OnForeColorChanged(EventArgs e) { base.OnForeColorChanged(e); if (combo != null) combo.ForeColor = ForeColor; if (arrow != null) arrow.Invalidate(); }
+        protected override void OnForeColorChanged(EventArgs e) { base.OnForeColorChanged(e); if (combo != null) combo.ForeColor = ForeColor; }
         protected override void OnBackColorChanged(EventArgs e) { base.OnBackColorChanged(e); if (combo != null) combo.BackColor = BackColor; }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+
+        private void UpdateRoundedRegion()
+        {
+            if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
+            using (GraphicsPath path = RoundedPath(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height), CornerRadius))
+            {
+                Region old = Region;
+                Region = new Region(path);
+                if (old != null) old.Dispose();
+            }
+        }
 
         public ComboBox.ObjectCollection Items { get { return combo.Items; } }
-        public int SelectedIndex { get { return combo.SelectedIndex; } set { combo.SelectedIndex = value; } }
+        public int SelectedIndex { get { return combo.SelectedIndex; } set { combo.SelectedIndex = value; Invalidate(); } }
         public object SelectedItem { get { return combo.SelectedItem; } }
         public ComboBoxStyle DropDownStyle { get { return combo.DropDownStyle; } set { combo.DropDownStyle = value; } }
         public FlatStyle FlatStyle { get { return combo.FlatStyle; } set { combo.FlatStyle = value; } }
@@ -1208,7 +1393,7 @@ namespace NetworkMonitorApp
         public int ItemHeight { get { return combo.ItemHeight; } set { combo.ItemHeight = value; } }
         public event EventHandler SelectedIndexChanged { add { combo.SelectedIndexChanged += value; } remove { combo.SelectedIndexChanged -= value; } }
 
-        public override string Text { get { return combo == null ? base.Text : combo.Text; } set { if (combo == null) base.Text = value; else combo.Text = value; } }
+        public override string Text { get { return combo == null || combo.SelectedIndex < 0 ? base.Text : combo.GetItemText(combo.SelectedItem); } set { if (combo == null) base.Text = value; else { combo.Text = value; Invalidate(); } } }
     }
 
     internal sealed class LiquidBackdropPanel : Panel
@@ -1262,8 +1447,26 @@ namespace NetworkMonitorApp
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
+            PaintSurface(e.Graphics);
+        }
+
+        internal void PaintBackgroundForChild(Graphics graphics, Control child)
+        {
+            GraphicsState state = graphics.Save();
+            try
+            {
+                graphics.TranslateTransform(-child.Left, -child.Top);
+                using (SolidBrush baseLayer = new SolidBrush(LiquidGlassTheme.Window))
+                    graphics.FillRectangle(baseLayer, ClientRectangle);
+                PaintSurface(graphics);
+            }
+            finally { graphics.Restore(state); }
+        }
+
+        private void PaintSurface(Graphics graphics)
+        {
             if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
             Rectangle bounds = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
             using (System.Drawing.Drawing2D.GraphicsPath path = new System.Drawing.Drawing2D.GraphicsPath())
             using (LinearGradientBrush fill = new LinearGradientBrush(bounds, LiquidGlassTheme.GlassTop, LiquidGlassTheme.GlassBottom, 90F))
@@ -1276,9 +1479,9 @@ namespace NetworkMonitorApp
                 path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
                 path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
                 path.CloseFigure();
-                e.Graphics.FillPath(fill, path);
-                e.Graphics.DrawPath(pen, path);
-                e.Graphics.DrawLine(highlight, bounds.Left + CornerRadius, bounds.Top + 1, bounds.Right - CornerRadius, bounds.Top + 1);
+                graphics.FillPath(fill, path);
+                graphics.DrawPath(pen, path);
+                graphics.DrawLine(highlight, bounds.Left + CornerRadius, bounds.Top + 1, bounds.Right - CornerRadius, bounds.Top + 1);
             }
         }
     }
@@ -1832,13 +2035,13 @@ namespace NetworkMonitorApp
 
     internal sealed class MainForm : Form
     {
-        private readonly Button startStopButton;
-        private readonly Button openLogsButton;
-        private readonly Button copyReportButton;
-        private readonly Button routeTraceButton;
-        private readonly Button aiButton;
-        private readonly Button disconnectAiButton;
-        private readonly Button aiSettingsButton;
+        private readonly GlassButton startStopButton;
+        private readonly GlassButton openLogsButton;
+        private readonly GlassButton copyReportButton;
+        private readonly GlassButton routeTraceButton;
+        private readonly GlassButton aiButton;
+        private readonly GlassButton disconnectAiButton;
+        private readonly GlassButton aiSettingsButton;
         private readonly Label statusLabel;
         private readonly Label wifiLabel;
         private readonly Label signalLabel;
@@ -1858,8 +2061,8 @@ namespace NetworkMonitorApp
         private readonly Label diagnosisHeading;
         private readonly Label overviewSummary;
         private readonly Label viewTitle;
-        private readonly Button monitorViewButton;
-        private readonly Button reportViewButton;
+        private readonly GlassButton monitorViewButton;
+        private readonly GlassButton reportViewButton;
         private readonly Panel monitorPage;
         private readonly Panel reportPage;
         private readonly Panel viewHost;
@@ -1983,7 +2186,7 @@ namespace NetworkMonitorApp
             monitorStack.Controls.Add(metricSurface);
             Label metricHeading = new Label { Text = language == AppLanguage.Romanian ? "VERIFICĂRI" : "NETWORK CHECKS", AutoSize = true, Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold), ForeColor = Color.FromArgb(104, 112, 124), Location = new Point(20, 13) };
             metricSurface.Controls.Add(metricHeading);
-            metricsLayout = new TableLayoutPanel { Location = new Point(14, 36), Size = new Size(metricSurface.Width - 28, 114), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ColumnCount = 4, RowCount = 2, BackColor = Color.White, Padding = new Padding(0) };
+            metricsLayout = new TableLayoutPanel { Location = new Point(14, 36), Size = new Size(metricSurface.Width - 28, 114), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ColumnCount = 4, RowCount = 2, BackColor = Color.Transparent, Padding = new Padding(0) };
             metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
             metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
             metricsLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25F));
@@ -2134,32 +2337,19 @@ namespace NetworkMonitorApp
             }
         }
 
-        private static Button CreateToolbarButton(string text, int width)
+        private static GlassButton CreateToolbarButton(string text, int width)
         {
-            Button button = new GlassButton { Text = text, Size = new Size(width, 34), Margin = new Padding(0, 0, 8, 0), FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.GlassInset, ForeColor = Color.FromArgb(255, 244, 246, 250), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
-            button.FlatAppearance.BorderColor = LiquidGlassTheme.Stroke;
-            button.FlatAppearance.BorderSize = 1;
-            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(255, 43, 54, 70);
-            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(255, 51, 66, 86);
-            return button;
+            return new GlassButton { Text = text, Size = new Size(width, 34), Margin = new Padding(0, 0, 8, 0), BackColor = LiquidGlassTheme.GlassInset, ForeColor = Color.FromArgb(255, 244, 246, 250), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand };
         }
 
-        private static Button CreatePrimaryButton(string text, int width, int height)
+        private static GlassButton CreatePrimaryButton(string text, int width, int height)
         {
-            Button button = new GlassButton { Text = text, Size = new Size(width, height), FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
-            button.FlatAppearance.BorderColor = Color.FromArgb(145, 197, 255);
-            button.FlatAppearance.BorderSize = 1;
-            button.FlatAppearance.MouseOverBackColor = LiquidGlassTheme.SapphireHover;
-            button.FlatAppearance.MouseDownBackColor = Color.FromArgb(102, 158, 232);
-            return button;
+            return new GlassButton { Text = text, Size = new Size(width, height), BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9.5F, FontStyle.Bold), Cursor = Cursors.Hand };
         }
 
-        private static Button CreateNavigationButton(string text)
+        private static GlassButton CreateNavigationButton(string text)
         {
-            Button button = new GlassButton { Text = text, Size = new Size(102, 34), FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.SecondaryText, Font = new Font("Segoe UI", 8.5F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
-            button.FlatAppearance.BorderSize = 0;
-            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(255, 43, 54, 70);
-            return button;
+            return new GlassButton { Text = text, Size = new Size(102, 34), BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.SecondaryText, Font = new Font("Segoe UI", 8.5F), Cursor = Cursors.Hand };
         }
 
         private static Label AddMetricCell(TableLayoutPanel layout, int column, int row, string title, out Label value)
@@ -2222,12 +2412,10 @@ namespace NetworkMonitorApp
             StyleNavigationButton(reportViewButton, true);
         }
 
-        private static void StyleNavigationButton(Button button, bool active)
+        private static void StyleNavigationButton(GlassButton button, bool active)
         {
             button.BackColor = active ? Color.FromArgb(255, 31, 48, 68) : Color.FromArgb(255, 17, 22, 31);
             button.ForeColor = active ? LiquidGlassTheme.Sapphire : LiquidGlassTheme.SecondaryText;
-            button.FlatAppearance.BorderSize = active ? 1 : 0;
-            button.FlatAppearance.BorderColor = active ? Color.FromArgb(90, 131, 181, 255) : LiquidGlassTheme.Stroke;
         }
 
         private void StartStopClicked(object sender, EventArgs e)
@@ -2562,13 +2750,11 @@ namespace NetworkMonitorApp
                 output.BorderStyle = BorderStyle.None;
                 output.Margin = new Padding(18);
                 output.Text = result;
-                Button close = new GlassButton();
+                GlassButton close = new GlassButton();
                 close.Text = language == AppLanguage.Romanian ? "Închide" : "Close";
                 close.DialogResult = DialogResult.OK;
                 close.Dock = DockStyle.Bottom;
                 close.Height = 44;
-                close.FlatStyle = FlatStyle.Flat;
-                close.FlatAppearance.BorderSize = 0;
                 close.BackColor = LiquidGlassTheme.Sapphire;
                 close.ForeColor = Color.FromArgb(9, 15, 24);
                 close.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);

@@ -266,11 +266,9 @@ namespace NetworkMonitorApp
 
             hint = new Label { Location = new Point(20, 148), Size = new Size(458, 80), AutoEllipsis = true, ForeColor = Color.FromArgb(91, 101, 114), Font = new Font("Segoe UI", 8.5F) };
             card.Controls.Add(hint);
-            Button save = new GlassButton { Text = ro ? "Salvează" : "Save", Location = new Point(322, 404), Size = new Size(104, 36), DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
-            save.FlatAppearance.BorderSize = 0;
+            GlassButton save = new GlassButton { Text = ro ? "Salvează" : "Save", Location = new Point(322, 404), Size = new Size(104, 36), DialogResult = DialogResult.OK, BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand };
             save.Click += SaveClicked;
-            Button cancel = new GlassButton { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 404), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand, UseVisualStyleBackColor = false };
-            cancel.FlatAppearance.BorderColor = LiquidGlassTheme.Stroke;
+            GlassButton cancel = new GlassButton { Text = ro ? "Anulează" : "Cancel", Location = new Point(432, 404), Size = new Size(108, 36), DialogResult = DialogResult.Cancel, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI", 9F), Cursor = Cursors.Hand };
             Controls.Add(save); Controls.Add(cancel);
             AcceptButton = save; CancelButton = cancel;
             LiquidGlassTheme.ApplyTree(this, save);
