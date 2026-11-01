@@ -160,17 +160,14 @@ namespace NetworkMonitorApp
         private readonly GlassButton backButton;
         private readonly GlassButton reloadButton;
         private readonly GlassButton browserButton;
-        private readonly GlassButton historyButton;
         private readonly GlassButton privacyButton;
-        private readonly Action<string> openHistory;
         private WebView2 webView;
         private string webViewUserDataFolder;
         private SpeedTestProvider activeProvider;
         private AppLanguage language = AppLanguage.English;
 
-        internal SpeedTestPage(Action<string> openHistory)
+        internal SpeedTestPage()
         {
-            this.openHistory = openHistory;
             Dock = DockStyle.Fill;
             AutoScroll = true;
             BackColor = LiquidGlassTheme.Window;
@@ -209,12 +206,8 @@ namespace NetworkMonitorApp
             browserButton.Enabled = false;
             browserButton.Click += BrowserButtonClicked;
             controls.Controls.Add(browserButton);
-            historyButton = CreateButton("SpeedEnterHistory", 192);
-            historyButton.Location = new Point(749, 37);
-            historyButton.Click += delegate { if (this.openHistory != null) this.openHistory(CurrentProvider.Name); };
-            controls.Controls.Add(historyButton);
             privacyButton = CreateButton("SpeedPrivacy", 120);
-            privacyButton.Location = new Point(949, 37);
+            privacyButton.Location = new Point(749, 37);
             privacyButton.Click += PrivacyButtonClicked;
             controls.Controls.Add(privacyButton);
             status = new Label { AutoSize = false, Location = new Point(18, 78), Size = new Size(1140, 26), Font = new Font("Segoe UI", 8.5F), ForeColor = LiquidGlassTheme.SecondaryText, AutoEllipsis = true };
@@ -252,7 +245,6 @@ namespace NetworkMonitorApp
             backButton.Text = Localization.Get(language, "SpeedBack");
             reloadButton.Text = Localization.Get(language, "SpeedReload");
             browserButton.Text = Localization.Get(language, "SpeedBrowser");
-            historyButton.Text = Localization.Get(language, "SpeedEnterHistory");
             privacyButton.Text = Localization.Get(language, "SpeedPrivacy");
             providerLabel.Text = Localization.Get(language, "SpeedProvider");
             if (browserHost.Controls.Count > 0 && browserHost.Controls[0].Name == "emptyState") browserHost.Controls[0].Text = Localization.Get(language, "SpeedEmpty");

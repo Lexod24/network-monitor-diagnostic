@@ -2229,205 +2229,6 @@ namespace NetworkMonitorApp
         }
     }
 
-    internal sealed class SpeedTestHistoryRecord
-    {
-        public string Id { get; set; }
-        public string TimestampLocal { get; set; }
-        public string Provider { get; set; }
-        public string ConnectionType { get; set; }
-        public double DownloadMbps { get; set; }
-        public double UploadMbps { get; set; }
-        public double PingMs { get; set; }
-    }
-
-    internal static class SpeedTestHistoryStore
-    {
-        private const int MaximumFileBytes = 4 * 1024 * 1024;
-        private static readonly string DefaultHistoryPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetworkMonitor", "speed-test-history.json");
-
-        internal static string HistoryPath { get { return DefaultHistoryPath; } }
-
-        internal static List<SpeedTestHistoryRecord> Load(string path)
-        {
-            if (String.IsNullOrWhiteSpace(path)) throw new ArgumentException("A history path is required.", "path");
-            if (!File.Exists(path)) return new List<SpeedTestHistoryRecord>();
-            FileInfo info = new FileInfo(path);
-            if (info.Length > MaximumFileBytes) throw new InvalidDataException("The speed-test history file is larger than the supported limit.");
-            string json = File.ReadAllText(path, Encoding.UTF8).TrimStart('\uFEFF');
-            JavaScriptSerializer serializer = CreateSerializer();
-            List<SpeedTestHistoryRecord> records = serializer.Deserialize<List<SpeedTestHistoryRecord>>(json);
-            if (records == null) throw new InvalidDataException("The speed-test history file has an invalid format.");
-            if (records.Any(delegate(SpeedTestHistoryRecord record) { return !IsValid(record); }))
-                throw new InvalidDataException("The speed-test history contains invalid records.");
-            return records.OrderByDescending(TimestampValue).ToList();
-        }
-
-        internal static void Save(string path, IList<SpeedTestHistoryRecord> records)
-        {
-            if (String.IsNullOrWhiteSpace(path)) throw new ArgumentException("A history path is required.", "path");
-            if (records == null) throw new ArgumentNullException("records");
-            foreach (SpeedTestHistoryRecord record in records)
-                if (!IsValid(record)) throw new InvalidDataException("The speed-test history contains an invalid record.");
-
-            string directory = Path.GetDirectoryName(Path.GetFullPath(path));
-            Directory.CreateDirectory(directory);
-            string temporaryPath = path + ".tmp";
-            string json = CreateSerializer().Serialize(records);
-            if (Encoding.UTF8.GetByteCount(json) > MaximumFileBytes) throw new InvalidDataException("The speed-test history reached its storage limit.");
-            File.WriteAllText(temporaryPath, json, new UTF8Encoding(false));
-            try
-            {
-                if (File.Exists(path)) File.Replace(temporaryPath, path, null, true);
-                else File.Move(temporaryPath, path);
-            }
-            finally { try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { } }
-        }
-
-        internal static bool IsValid(SpeedTestHistoryRecord record)
-        {
-            if (record == null || String.IsNullOrWhiteSpace(record.Id) || String.IsNullOrWhiteSpace(record.Provider) ||
-                record.Provider.Trim().Length > 80 || record.Provider.Any(Char.IsControl) || String.IsNullOrWhiteSpace(record.ConnectionType)) return false;
-            Guid id;
-            DateTimeOffset timestamp;
-            return Guid.TryParse(record.Id, out id) && DateTimeOffset.TryParse(record.TimestampLocal, CultureInfo.InvariantCulture, DateTimeStyles.None, out timestamp) &&
-                new string[] { "Wi-Fi", "Ethernet", "Mobile data", "Other" }.Contains(record.ConnectionType) &&
-                IsValidMeasurement(record.DownloadMbps, 1000000) && IsValidMeasurement(record.UploadMbps, 1000000) &&
-                IsValidMeasurement(record.PingMs, 60000) && (record.DownloadMbps > 0 || record.UploadMbps > 0);
-        }
-
-        internal static bool IsValidMeasurement(double value, double maximum)
-        {
-            return !Double.IsNaN(value) && !Double.IsInfinity(value) && value >= 0 && value <= maximum;
-        }
-
-        internal static string FormatCsv(IList<SpeedTestHistoryRecord> records)
-        {
-            StringBuilder output = new StringBuilder();
-            output.AppendLine("TimestampLocal,Provider,ConnectionType,DownloadMbps,UploadMbps,PingMs,EntrySource");
-            if (records == null) return output.ToString();
-            foreach (SpeedTestHistoryRecord record in records.OrderByDescending(TimestampValue))
-            {
-                if (!IsValid(record)) continue;
-                string[] cells = new string[]
-                {
-                    record.TimestampLocal,
-                    record.Provider.Trim(),
-                    record.ConnectionType,
-                    record.DownloadMbps.ToString("0.##", CultureInfo.InvariantCulture),
-                    record.UploadMbps.ToString("0.##", CultureInfo.InvariantCulture),
-                    record.PingMs.ToString("0.##", CultureInfo.InvariantCulture),
-                    "Manual"
-                };
-                output.AppendLine(String.Join(",", cells.Select(CsvLoggerEscape).ToArray()));
-            }
-            return output.ToString();
-        }
-
-        internal static DateTimeOffset TimestampValue(SpeedTestHistoryRecord record)
-        {
-            DateTimeOffset timestamp;
-            return DateTimeOffset.TryParse(record == null ? null : record.TimestampLocal, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out timestamp)
-                ? timestamp : DateTimeOffset.MinValue;
-        }
-
-        internal static bool RemoveById(IList<SpeedTestHistoryRecord> records, string id)
-        {
-            if (records == null || String.IsNullOrWhiteSpace(id)) return false;
-            for (int i = records.Count - 1; i >= 0; i--)
-            {
-                if (!String.Equals(records[i].Id, id, StringComparison.OrdinalIgnoreCase)) continue;
-                records.RemoveAt(i);
-                return true;
-            }
-            return false;
-        }
-
-        private static JavaScriptSerializer CreateSerializer()
-        {
-            return new JavaScriptSerializer { MaxJsonLength = MaximumFileBytes, RecursionLimit = 16 };
-        }
-
-        private static string CsvLoggerEscape(string value)
-        {
-            if (value == null) return String.Empty;
-            if (value.IndexOfAny(new char[] { ',', '"', '\r', '\n' }) < 0) return value;
-            return "\"" + value.Replace("\"", "\"\"") + "\"";
-        }
-    }
-
-    internal sealed class SpeedHistoryChartPanel : Panel
-    {
-        private IList<SpeedTestHistoryRecord> records = new List<SpeedTestHistoryRecord>();
-        private AppLanguage language = AppLanguage.English;
-
-        internal AppLanguage Language
-        {
-            get { return language; }
-            set { if (language != value) { language = value; Invalidate(); } }
-        }
-
-        internal void SetRecords(IList<SpeedTestHistoryRecord> values)
-        {
-            records = values == null ? new List<SpeedTestHistoryRecord>() : values.OrderByDescending(SpeedTestHistoryStore.TimestampValue).Take(30).OrderBy(SpeedTestHistoryStore.TimestampValue).ToList();
-            Invalidate();
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            Graphics graphics = e.Graphics;
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.Clear(BackColor);
-            Rectangle plot = new Rectangle(54, 28, Math.Max(10, ClientSize.Width - 76), Math.Max(10, ClientSize.Height - 64));
-            using (Pen gridPen = new Pen(Color.FromArgb(48, 60, 74)))
-            using (Pen downloadPen = new Pen(LiquidGlassTheme.Sapphire, 2.2F))
-            using (Pen uploadPen = new Pen(Color.FromArgb(255, 74, 211, 172), 2.2F))
-            using (Brush textBrush = new SolidBrush(LiquidGlassTheme.SecondaryText))
-            using (Brush downloadBrush = new SolidBrush(LiquidGlassTheme.Sapphire))
-            using (Brush uploadBrush = new SolidBrush(Color.FromArgb(255, 74, 211, 172)))
-            using (Font labelFont = new Font("Segoe UI", 8F))
-            {
-                string title = Localization.Get(language, "HistoryChartTitle");
-                graphics.DrawString(title, labelFont, textBrush, new PointF(8, 7));
-                if (records.Count == 0)
-                {
-                    DrawCenteredText(graphics, Localization.Get(language, "HistoryChartEmpty"), labelFont, textBrush, ClientRectangle);
-                    return;
-                }
-
-                double maximum = Math.Max(1, records.Max(delegate(SpeedTestHistoryRecord item) { return Math.Max(item.DownloadMbps, item.UploadMbps); }));
-                maximum = Math.Ceiling(maximum / 10.0) * 10.0;
-                for (int i = 0; i <= 4; i++)
-                {
-                    float y = plot.Bottom - plot.Height * i / 4F;
-                    graphics.DrawLine(gridPen, plot.Left, y, plot.Right, y);
-                    graphics.DrawString((maximum * i / 4.0).ToString("0", CultureInfo.InvariantCulture), labelFont, textBrush, 4, y - 7);
-                }
-                PointF[] download = new PointF[records.Count];
-                PointF[] upload = new PointF[records.Count];
-                for (int i = 0; i < records.Count; i++)
-                {
-                    float x = records.Count == 1 ? plot.Left + plot.Width / 2F : plot.Left + plot.Width * i / (records.Count - 1F);
-                    download[i] = new PointF(x, plot.Bottom - (float)(records[i].DownloadMbps / maximum) * plot.Height);
-                    upload[i] = new PointF(x, plot.Bottom - (float)(records[i].UploadMbps / maximum) * plot.Height);
-                }
-                if (download.Length > 1) { graphics.DrawLines(downloadPen, download); graphics.DrawLines(uploadPen, upload); }
-                else { graphics.FillEllipse(downloadBrush, download[0].X - 3, download[0].Y - 3, 6, 6); graphics.FillEllipse(uploadBrush, upload[0].X - 3, upload[0].Y - 3, 6, 6); }
-                graphics.FillEllipse(downloadBrush, plot.Right - 140, 8, 8, 8);
-                graphics.DrawString(Localization.Get(language, "HistoryDownload"), labelFont, textBrush, plot.Right - 128, 5);
-                graphics.FillEllipse(uploadBrush, plot.Right - 68, 8, 8, 8);
-                graphics.DrawString(Localization.Get(language, "HistoryUpload"), labelFont, textBrush, plot.Right - 56, 5);
-            }
-        }
-
-        private static void DrawCenteredText(Graphics graphics, string value, Font font, Brush brush, Rectangle bounds)
-        {
-            SizeF size = graphics.MeasureString(value, font);
-            graphics.DrawString(value, font, brush, Math.Max(8, (bounds.Width - size.Width) / 2F), Math.Max(24, (bounds.Height - size.Height) / 2F));
-        }
-    }
-
     internal sealed class MainForm : Form
     {
         private readonly GlassButton startStopButton;
@@ -2463,39 +2264,12 @@ namespace NetworkMonitorApp
         private readonly Label viewTitle;
         private readonly GlassButton monitorViewButton;
         private readonly GlassButton reportViewButton;
-        private readonly GlassButton historyViewButton;
         private readonly GlassButton speedTestViewButton;
         private readonly Panel monitorPage;
         private readonly Panel reportPage;
-        private readonly Panel historyPage;
         private readonly SpeedTestPage speedTestPage;
         private readonly Panel viewHost;
         private readonly Panel monitorStack;
-        private Label historyHeading;
-        private Label historySubtitle;
-        private Label historyProviderLabel;
-        private Label historyConnectionLabel;
-        private Label historyDownloadLabel;
-        private Label historyUploadLabel;
-        private Label historyPingLabel;
-        private Label historyPrivacyNote;
-        private Label historyStatusLabel;
-        private Label historyListTitle;
-        private ComboBox historyProviderInput;
-        private GlassComboBox historyConnectionInput;
-        private TextBox historyDownloadInput;
-        private TextBox historyUploadInput;
-        private TextBox historyPingInput;
-        private GlassButton historySaveButton;
-        private GlassButton historyDeleteButton;
-        private GlassButton historyClearButton;
-        private GlassButton historyExportButton;
-        private DataGridView historyGrid;
-        private SpeedHistoryChartPanel historyChart;
-        private readonly List<SpeedTestHistoryRecord> speedHistory = new List<SpeedTestHistoryRecord>();
-        private string historyLoadError;
-        private string historyStatusKey = "HistoryManualEntryNotice";
-        private string historyStatusArgument;
         private readonly TableLayoutPanel metricsLayout;
         private readonly Label wifiTitle;
         private readonly Label signalTitle;
@@ -2593,12 +2367,8 @@ namespace NetworkMonitorApp
             reportViewButton.Location = new Point(238, 6);
             reportViewButton.Click += delegate { ShowReportView(); };
             navigation.Controls.Add(reportViewButton);
-            historyViewButton = CreateNavigationButton(Localization.Get(language, "HistoryTab"));
-            historyViewButton.Location = new Point(348, 6);
-            historyViewButton.Click += delegate { ShowHistoryView(); };
-            navigation.Controls.Add(historyViewButton);
             speedTestViewButton = CreateNavigationButton(Localization.Get(language, "SpeedTab"));
-            speedTestViewButton.Location = new Point(458, 6);
+            speedTestViewButton.Location = new Point(348, 6);
             speedTestViewButton.Click += delegate { ShowSpeedTestView(); };
             navigation.Controls.Add(speedTestViewButton);
 
@@ -2611,11 +2381,9 @@ namespace NetworkMonitorApp
 
             monitorPage = new LiquidBackdropPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = LiquidGlassTheme.Window };
             reportPage = new LiquidBackdropPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = LiquidGlassTheme.Window, Visible = false };
-            historyPage = new LiquidBackdropPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = LiquidGlassTheme.Window, Visible = false };
-            speedTestPage = new SpeedTestPage(OpenHistoryForSpeedTest) { Visible = false };
+            speedTestPage = new SpeedTestPage() { Visible = false };
             viewHost.Controls.Add(monitorPage);
             viewHost.Controls.Add(reportPage);
-            viewHost.Controls.Add(historyPage);
             viewHost.Controls.Add(speedTestPage);
 
             monitorStack = new Panel { Location = new Point(24, 18), Height = 830, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.Transparent };
@@ -2714,15 +2482,6 @@ namespace NetworkMonitorApp
             diagnosisGroup.Controls.Add(diagnosisBox);
             reportPage.Resize += delegate { diagnosisGroup.Width = Math.Max(600, reportPage.ClientSize.Width - 48); };
 
-            BuildHistoryPage(out historyHeading, out historySubtitle, out historyProviderLabel, out historyConnectionLabel,
-                out historyDownloadLabel, out historyUploadLabel, out historyPingLabel, out historyPrivacyNote, out historyStatusLabel,
-                out historyListTitle, out historyProviderInput, out historyConnectionInput, out historyDownloadInput,
-                out historyUploadInput, out historyPingInput, out historySaveButton, out historyDeleteButton,
-                out historyClearButton, out historyExportButton, out historyGrid, out historyChart);
-            try { speedHistory.AddRange(SpeedTestHistoryStore.Load(SpeedTestHistoryStore.HistoryPath)); }
-            catch (Exception ex) { historyLoadError = ex.Message; }
-            RenderSpeedHistory();
-
             footerLabel.Text = Localization.Get(language, "Footer");
             aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
             disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
@@ -2732,360 +2491,6 @@ namespace NetworkMonitorApp
             GlassWindowEffects.Attach(this, false);
             Shown += delegate { GlassWindowEffects.ApplyDarkScrollbars(this); CheckForUpdatesOnStartup(); };
             ShowMonitorView();
-        }
-
-        private void BuildHistoryPage(out Label heading, out Label subtitle, out Label providerLabel, out Label connectionLabel,
-            out Label downloadLabel, out Label uploadLabel, out Label pingLabel, out Label privacyNote, out Label statusLabel,
-            out Label listTitle, out ComboBox providerInput, out GlassComboBox connectionInput, out TextBox downloadInput,
-            out TextBox uploadInput, out TextBox pingInput, out GlassButton saveButton, out GlassButton deleteButton,
-            out GlassButton clearButton, out GlassButton exportButton, out DataGridView historyDataGrid, out SpeedHistoryChartPanel chart)
-        {
-            heading = new Label { Text = Localization.Get(language, "HistoryHeading"), AutoSize = true, Font = new Font("Segoe UI Semibold", 21F, FontStyle.Bold), ForeColor = LiquidGlassTheme.Text, Location = new Point(28, 22) };
-            historyPage.Controls.Add(heading);
-            subtitle = new Label { Text = Localization.Get(language, "HistorySubtitle"), AutoSize = true, Font = new Font("Segoe UI", 9.5F), ForeColor = LiquidGlassTheme.SecondaryText, Location = new Point(30, 61) };
-            historyPage.Controls.Add(subtitle);
-
-            SoftSurfacePanel entrySurface = new SoftSurfacePanel { Location = new Point(24, 98), Size = new Size(1188, 170), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(18) };
-            historyPage.Controls.Add(entrySurface);
-            TableLayoutPanel form = new TableLayoutPanel { Location = new Point(16, 14), Size = new Size(entrySurface.Width - 32, 136), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, ColumnCount = 6, RowCount = 3, BackColor = Color.Transparent, Padding = new Padding(0) };
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 20F));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 16F));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15F));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 15F));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 13F));
-            form.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 21F));
-            form.RowStyles.Add(new RowStyle(SizeType.Absolute, 27F));
-            form.RowStyles.Add(new RowStyle(SizeType.Absolute, 42F));
-            form.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-            entrySurface.Controls.Add(form);
-
-            providerLabel = HistoryFieldLabel(Localization.Get(language, "HistoryProvider"));
-            connectionLabel = HistoryFieldLabel(Localization.Get(language, "HistoryConnection"));
-            downloadLabel = HistoryFieldLabel(Localization.Get(language, "HistoryDownload"));
-            uploadLabel = HistoryFieldLabel(Localization.Get(language, "HistoryUpload"));
-            pingLabel = HistoryFieldLabel(Localization.Get(language, "HistoryPing"));
-            form.Controls.Add(providerLabel, 0, 0);
-            form.Controls.Add(connectionLabel, 1, 0);
-            form.Controls.Add(downloadLabel, 2, 0);
-            form.Controls.Add(uploadLabel, 3, 0);
-            form.Controls.Add(pingLabel, 4, 0);
-
-            providerInput = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Font = new Font("Segoe UI", 9F), ForeColor = LiquidGlassTheme.Text, BackColor = Color.FromArgb(255, 20, 27, 38), Margin = new Padding(4, 2, 8, 2), Dock = DockStyle.Fill, MaxLength = 80 };
-            providerInput.Items.AddRange(new object[] { "Ookla", "Netograf", "DIGI", "Vodafone" });
-            connectionInput = new GlassComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font("Segoe UI", 9F), ForeColor = LiquidGlassTheme.Text, BackColor = Color.FromArgb(255, 20, 27, 38), Margin = new Padding(4, 2, 8, 2), Dock = DockStyle.Fill };
-            downloadInput = CreateHistoryNumberInput();
-            uploadInput = CreateHistoryNumberInput();
-            pingInput = CreateHistoryNumberInput();
-            form.Controls.Add(providerInput, 0, 1);
-            form.Controls.Add(connectionInput, 1, 1);
-            form.Controls.Add(downloadInput, 2, 1);
-            form.Controls.Add(uploadInput, 3, 1);
-            form.Controls.Add(pingInput, 4, 1);
-
-            saveButton = CreateToolbarButton(Localization.Get(language, "HistorySave"), 132);
-            saveButton.Dock = DockStyle.Fill;
-            saveButton.Margin = new Padding(6, 1, 4, 5);
-            saveButton.Click += HistorySaveClicked;
-            form.Controls.Add(saveButton, 5, 1);
-            privacyNote = new Label { Text = Localization.Get(language, "HistoryPrivacyNote"), AutoSize = false, Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8F), ForeColor = LiquidGlassTheme.SecondaryText, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(4, 2, 4, 0) };
-            form.Controls.Add(privacyNote, 0, 2);
-            form.SetColumnSpan(privacyNote, 6);
-            Label historyStatusLocal = new Label { Text = Localization.Get(language, "HistoryManualEntryNotice"), AutoSize = false, Location = new Point(24, 275), Size = new Size(1000, 22), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Font = new Font("Segoe UI", 8.5F), ForeColor = LiquidGlassTheme.SecondaryText, AutoEllipsis = true };
-            statusLabel = historyStatusLocal;
-            historyPage.Controls.Add(historyStatusLocal);
-
-            SoftSurfacePanel chartSurface = new SoftSurfacePanel { Location = new Point(24, 304), Size = new Size(1188, 238), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(12) };
-            historyPage.Controls.Add(chartSurface);
-            SpeedHistoryChartPanel chartLocal = new SpeedHistoryChartPanel { Location = new Point(10, 10), Size = new Size(chartSurface.Width - 20, chartSurface.Height - 20), Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.FromArgb(255, 12, 17, 25), Language = language };
-            chart = chartLocal;
-            chartSurface.Controls.Add(chartLocal);
-            chartSurface.Resize += delegate { chartLocal.Width = Math.Max(300, chartSurface.ClientSize.Width - 20); chartLocal.Height = Math.Max(130, chartSurface.ClientSize.Height - 20); };
-
-            SoftSurfacePanel listSurface = new SoftSurfacePanel { Location = new Point(24, 558), Size = new Size(1188, 310), Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, Padding = new Padding(14) };
-            historyPage.Controls.Add(listSurface);
-            listTitle = new Label { Text = Localization.Get(language, "HistoryRecordsTitle"), AutoSize = true, Location = new Point(18, 15), Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold), ForeColor = LiquidGlassTheme.SecondaryText };
-            listSurface.Controls.Add(listTitle);
-            GlassButton exportButtonLocal = CreateToolbarButton(Localization.Get(language, "HistoryExport"), 94);
-            GlassButton deleteButtonLocal = CreateToolbarButton(Localization.Get(language, "HistoryDelete"), 112);
-            GlassButton clearButtonLocal = CreateToolbarButton(Localization.Get(language, "HistoryClear"), 104);
-            exportButton = exportButtonLocal;
-            deleteButton = deleteButtonLocal;
-            clearButton = clearButtonLocal;
-            exportButtonLocal.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            deleteButtonLocal.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            clearButtonLocal.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-            DataGridView historyGridLocal = new DataGridView
-            {
-                Location = new Point(12, 40), Size = new Size(listSurface.Width - 24, listSurface.Height - 52),
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-                ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false,
-                RowHeadersVisible = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-                MultiSelect = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
-                BackgroundColor = Color.FromArgb(255, 12, 17, 25), BorderStyle = BorderStyle.None,
-                CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Color.FromArgb(48, 60, 74),
-                EnableHeadersVisualStyles = false, RowTemplate = { Height = 30 }
-            };
-            historyDataGrid = historyGridLocal;
-            listSurface.Resize += delegate
-            {
-                exportButtonLocal.Location = new Point(Math.Max(8, listSurface.ClientSize.Width - exportButtonLocal.Width - 12), 7);
-                clearButtonLocal.Location = new Point(Math.Max(8, exportButtonLocal.Left - clearButtonLocal.Width - 8), 7);
-                deleteButtonLocal.Location = new Point(Math.Max(8, clearButtonLocal.Left - deleteButtonLocal.Width - 8), 7);
-                historyGridLocal.Width = Math.Max(400, listSurface.ClientSize.Width - 24);
-                historyGridLocal.Height = Math.Max(120, listSurface.ClientSize.Height - 48);
-            };
-            exportButtonLocal.Click += HistoryExportClicked;
-            deleteButtonLocal.Click += HistoryDeleteClicked;
-            clearButtonLocal.Click += HistoryClearClicked;
-            listSurface.Controls.Add(deleteButtonLocal);
-            listSurface.Controls.Add(clearButtonLocal);
-            listSurface.Controls.Add(exportButtonLocal);
-
-            historyGridLocal.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(255, 19, 25, 35);
-            historyGridLocal.ColumnHeadersDefaultCellStyle.ForeColor = LiquidGlassTheme.SecondaryText;
-            historyGridLocal.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 8F, FontStyle.Bold);
-            historyGridLocal.DefaultCellStyle.BackColor = Color.FromArgb(255, 12, 17, 25);
-            historyGridLocal.DefaultCellStyle.ForeColor = LiquidGlassTheme.Text;
-            historyGridLocal.DefaultCellStyle.SelectionBackColor = Color.FromArgb(255, 35, 54, 78);
-            historyGridLocal.DefaultCellStyle.SelectionForeColor = LiquidGlassTheme.Text;
-            historyGridLocal.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(255, 16, 22, 31);
-            historyGridLocal.Columns.Add("time", "");
-            historyGridLocal.Columns.Add("provider", "");
-            historyGridLocal.Columns.Add("connection", "");
-            historyGridLocal.Columns.Add("download", "");
-            historyGridLocal.Columns.Add("upload", "");
-            historyGridLocal.Columns.Add("ping", "");
-            historyGridLocal.Columns.Add("source", "");
-            historyGridLocal.Columns[0].FillWeight = 125;
-            historyGridLocal.Columns[1].FillWeight = 90;
-            historyGridLocal.Columns[2].FillWeight = 85;
-            historyGridLocal.Columns[3].FillWeight = 70;
-            historyGridLocal.Columns[4].FillWeight = 70;
-            historyGridLocal.Columns[5].FillWeight = 60;
-            historyGridLocal.Columns[6].FillWeight = 70;
-            listSurface.Controls.Add(historyGridLocal);
-            historyPage.Resize += delegate { listSurface.Width = Math.Max(600, historyPage.ClientSize.Width - 48 - (historyPage.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0)); entrySurface.Width = listSurface.Width; chartSurface.Width = listSurface.Width; historyStatusLocal.Width = listSurface.Width - 8; };
-            PopulateConnectionTypes(connectionInput, language);
-        }
-
-        private static Label HistoryFieldLabel(string text)
-        {
-            return new Label { Text = text, AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 8F), ForeColor = LiquidGlassTheme.SecondaryText, Padding = new Padding(4, 0, 2, 0) };
-        }
-
-        private static TextBox CreateHistoryNumberInput()
-        {
-            return new TextBox { BorderStyle = BorderStyle.FixedSingle, BackColor = Color.FromArgb(255, 20, 27, 38), ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI", 9F), Dock = DockStyle.Fill, Margin = new Padding(4, 2, 8, 2), MaxLength = 16 };
-        }
-
-        private static string[] HistoryConnectionKeys()
-        {
-            return new string[] { "HistoryWifi", "HistoryEthernet", "HistoryMobile", "HistoryOther" };
-        }
-
-        private static void PopulateConnectionTypes(GlassComboBox combo, AppLanguage selectedLanguage)
-        {
-            int selected = combo.SelectedIndex;
-            combo.Items.Clear();
-            foreach (string key in HistoryConnectionKeys()) combo.Items.Add(Localization.Get(selectedLanguage, key));
-            combo.SelectedIndex = selected >= 0 && selected < combo.Items.Count ? selected : 0;
-        }
-
-        private static string HistoryConnectionCode(int index)
-        {
-            string[] keys = new string[] { "Wi-Fi", "Ethernet", "Mobile data", "Other" };
-            return index >= 0 && index < keys.Length ? keys[index] : keys[0];
-        }
-
-        private static string LocalizeHistoryConnection(string value, AppLanguage selectedLanguage)
-        {
-            switch (value)
-            {
-                case "Wi-Fi": return Localization.Get(selectedLanguage, "HistoryWifi");
-                case "Ethernet": return Localization.Get(selectedLanguage, "HistoryEthernet");
-                case "Mobile data": return Localization.Get(selectedLanguage, "HistoryMobile");
-                default: return Localization.Get(selectedLanguage, "HistoryOther");
-            }
-        }
-
-        private void HistorySaveClicked(object sender, EventArgs e)
-        {
-            string provider = (historyProviderInput.Text ?? String.Empty).Trim();
-            double download;
-            double upload;
-            double ping;
-            if (provider.Length == 0 || provider.Length > 80 || provider.Any(Char.IsControl) || !TryParseHistoryNumber(historyDownloadInput.Text, out download) ||
-                !TryParseHistoryNumber(historyUploadInput.Text, out upload) || !TryParseHistoryNumber(historyPingInput.Text, out ping) ||
-                !SpeedTestHistoryStore.IsValidMeasurement(download, 1000000) || !SpeedTestHistoryStore.IsValidMeasurement(upload, 1000000) ||
-                !SpeedTestHistoryStore.IsValidMeasurement(ping, 60000) || (download <= 0 && upload <= 0))
-            {
-                historyStatusKey = "HistoryValidationError";
-                historyStatusArgument = null;
-                ApplyHistoryLanguage();
-                return;
-            }
-
-            SpeedTestHistoryRecord record = new SpeedTestHistoryRecord
-            {
-                Id = Guid.NewGuid().ToString("D"),
-                TimestampLocal = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture),
-                Provider = provider,
-                ConnectionType = HistoryConnectionCode(historyConnectionInput.SelectedIndex),
-                DownloadMbps = download,
-                UploadMbps = upload,
-                PingMs = ping
-            };
-            speedHistory.Add(record);
-            try
-            {
-                SpeedTestHistoryStore.Save(SpeedTestHistoryStore.HistoryPath, speedHistory);
-                historyStatusKey = "HistorySaved";
-                historyStatusArgument = null;
-                historyProviderInput.Text = String.Empty;
-                historyDownloadInput.Clear();
-                historyUploadInput.Clear();
-                historyPingInput.Clear();
-                RenderSpeedHistory();
-            }
-            catch (Exception ex)
-            {
-                speedHistory.Remove(record);
-                historyStatusKey = "HistorySaveError";
-                historyStatusArgument = ex.Message;
-            }
-            ApplyHistoryLanguage();
-        }
-
-        private static bool TryParseHistoryNumber(string value, out double result)
-        {
-            return Double.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out result) ||
-                Double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out result);
-        }
-
-        private void HistoryDeleteClicked(object sender, EventArgs e)
-        {
-            if (historyGrid.SelectedRows.Count == 0) return;
-            string id = Convert.ToString(historyGrid.SelectedRows[0].Tag, CultureInfo.InvariantCulture);
-            if (MessageBox.Show(this, Localization.Get(language, "HistoryDeleteConfirm"), Localization.Get(language, "HistoryTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            List<SpeedTestHistoryRecord> before = new List<SpeedTestHistoryRecord>(speedHistory);
-            SpeedTestHistoryStore.RemoveById(speedHistory, id);
-            PersistHistoryOrRestore(before);
-        }
-
-        private void HistoryClearClicked(object sender, EventArgs e)
-        {
-            if (speedHistory.Count == 0) return;
-            if (MessageBox.Show(this, Localization.Get(language, "HistoryClearConfirm"), Localization.Get(language, "HistoryTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-            List<SpeedTestHistoryRecord> before = new List<SpeedTestHistoryRecord>(speedHistory);
-            speedHistory.Clear();
-            PersistHistoryOrRestore(before);
-        }
-
-        private void PersistHistoryOrRestore(List<SpeedTestHistoryRecord> before)
-        {
-            try
-            {
-                SpeedTestHistoryStore.Save(SpeedTestHistoryStore.HistoryPath, speedHistory);
-                historyStatusKey = "HistoryDeleted";
-                historyStatusArgument = null;
-            }
-            catch (Exception ex)
-            {
-                speedHistory.Clear();
-                speedHistory.AddRange(before);
-                historyStatusKey = "HistorySaveError";
-                historyStatusArgument = ex.Message;
-            }
-            RenderSpeedHistory();
-            ApplyHistoryLanguage();
-        }
-
-        private void HistoryExportClicked(object sender, EventArgs e)
-        {
-            using (SaveFileDialog dialog = new SaveFileDialog())
-            {
-                dialog.Title = Localization.Get(language, "HistoryExportTitle");
-                dialog.Filter = Localization.Get(language, "HistoryCsvFilter");
-                dialog.FileName = "speed-test-history.csv";
-                dialog.OverwritePrompt = true;
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                try
-                {
-                    File.WriteAllText(dialog.FileName, SpeedTestHistoryStore.FormatCsv(speedHistory), new UTF8Encoding(true));
-                    historyStatusKey = "HistoryExported";
-                    historyStatusArgument = dialog.FileName;
-                }
-                catch (Exception ex)
-                {
-                    historyStatusKey = "HistorySaveError";
-                    historyStatusArgument = ex.Message;
-                }
-                ApplyHistoryLanguage();
-            }
-        }
-
-        private void RenderSpeedHistory()
-        {
-            if (historyGrid == null) return;
-            historyGrid.Rows.Clear();
-            foreach (SpeedTestHistoryRecord record in speedHistory.OrderByDescending(SpeedTestHistoryStore.TimestampValue))
-            {
-                int row = historyGrid.Rows.Add(SpeedTestHistoryStore.TimestampValue(record).ToLocalTime().ToString("g", CultureInfo.CurrentCulture),
-                    record.Provider, LocalizeHistoryConnection(record.ConnectionType, language), FormatHistoryValue(record.DownloadMbps),
-                    FormatHistoryValue(record.UploadMbps), FormatHistoryValue(record.PingMs), Localization.Get(language, "HistoryManual"));
-                historyGrid.Rows[row].Tag = record.Id;
-            }
-            if (historyChart != null) historyChart.SetRecords(speedHistory);
-        }
-
-        private static string FormatHistoryValue(double value)
-        {
-            return value.ToString("0.##", CultureInfo.CurrentCulture);
-        }
-
-        private void ApplyHistoryLanguage()
-        {
-            if (historyHeading == null) return;
-            historyViewButton.Text = Localization.Get(language, "HistoryTab");
-            historyHeading.Text = Localization.Get(language, "HistoryHeading");
-            historySubtitle.Text = Localization.Get(language, "HistorySubtitle");
-            historyProviderLabel.Text = Localization.Get(language, "HistoryProvider");
-            historyConnectionLabel.Text = Localization.Get(language, "HistoryConnection");
-            historyDownloadLabel.Text = Localization.Get(language, "HistoryDownload");
-            historyUploadLabel.Text = Localization.Get(language, "HistoryUpload");
-            historyPingLabel.Text = Localization.Get(language, "HistoryPing");
-            historyPrivacyNote.Text = Localization.Get(language, "HistoryPrivacyNote");
-            historySaveButton.Text = Localization.Get(language, "HistorySave");
-            historyDeleteButton.Text = Localization.Get(language, "HistoryDelete");
-            historyClearButton.Text = Localization.Get(language, "HistoryClear");
-            historyExportButton.Text = Localization.Get(language, "HistoryExport");
-            historyListTitle.Text = Localization.Get(language, "HistoryRecordsTitle");
-            historyGrid.Columns[0].HeaderText = Localization.Get(language, "HistoryColumnTime");
-            historyGrid.Columns[1].HeaderText = Localization.Get(language, "HistoryProvider");
-            historyGrid.Columns[2].HeaderText = Localization.Get(language, "HistoryConnection");
-            historyGrid.Columns[3].HeaderText = Localization.Get(language, "HistoryDownloadColumn");
-            historyGrid.Columns[4].HeaderText = Localization.Get(language, "HistoryUploadColumn");
-            historyGrid.Columns[5].HeaderText = Localization.Get(language, "HistoryPingColumn");
-            historyGrid.Columns[6].HeaderText = Localization.Get(language, "HistorySource");
-            PopulateConnectionTypes(historyConnectionInput, language);
-            historyChart.Language = language;
-            historySaveButton.Enabled = historyLoadError == null;
-            historyDeleteButton.Enabled = historyLoadError == null && speedHistory.Count > 0;
-            historyClearButton.Enabled = historyLoadError == null && speedHistory.Count > 0;
-            historyExportButton.Enabled = historyLoadError == null && speedHistory.Count > 0;
-            if (historyLoadError != null)
-            {
-                historyStatusLabel.Text = Localization.Format(language, "HistoryLoadError", historyLoadError);
-                historyStatusLabel.ForeColor = LiquidGlassTheme.Warning;
-            }
-            else
-            {
-                historyStatusLabel.Text = historyStatusArgument == null
-                    ? Localization.Get(language, historyStatusKey)
-                    : Localization.Format(language, historyStatusKey, historyStatusArgument);
-                historyStatusLabel.ForeColor = historyStatusKey == "HistoryValidationError" || historyStatusKey == "HistorySaveError" ? LiquidGlassTheme.Warning : LiquidGlassTheme.SecondaryText;
-            }
-            RenderSpeedHistory();
         }
 
         private void CheckForUpdatesOnStartup()
@@ -3204,7 +2609,6 @@ namespace NetworkMonitorApp
             viewTitle.Text = Localization.Get(language, "ViewTitle");
             monitorViewButton.Text = Localization.Get(language, "MonitorOverview");
             reportViewButton.Text = Localization.Get(language, "MonitorDiagnosis");
-            historyViewButton.Text = Localization.Get(language, "HistoryTab");
             speedTestViewButton.Text = Localization.Get(language, "SpeedTab");
             reportEyebrow.Text = language == AppLanguage.Romanian ? "RAPORTUL SESIUNII" : "SESSION REPORT";
             reportIntro.Text = language == AppLanguage.Romanian ? "Constatări și pași următori" : "Findings and next steps";
@@ -3246,7 +2650,6 @@ namespace NetworkMonitorApp
                 else if (!monitoring) diagnosisBox.Text = DiagnosticEngine.Analyze(copy, language) + Environment.NewLine + Environment.NewLine +
                     Localization.Get(language, "AIDataNotice") + Environment.NewLine + Localization.Get(language, "ReportSavedLocally") + CsvLogger.ReportPath;
             }
-            ApplyHistoryLanguage();
             Invalidate(true);
             if (IsHandleCreated) Update();
         }
@@ -3376,12 +2779,10 @@ namespace NetworkMonitorApp
         {
             monitorPage.Visible = true;
             reportPage.Visible = false;
-            historyPage.Visible = false;
             speedTestPage.Visible = false;
             monitorPage.BringToFront();
             StyleNavigationButton(monitorViewButton, true);
             StyleNavigationButton(reportViewButton, false);
-            StyleNavigationButton(historyViewButton, false);
             StyleNavigationButton(speedTestViewButton, false);
         }
 
@@ -3389,47 +2790,22 @@ namespace NetworkMonitorApp
         {
             monitorPage.Visible = false;
             reportPage.Visible = true;
-            historyPage.Visible = false;
             speedTestPage.Visible = false;
             reportPage.BringToFront();
             StyleNavigationButton(monitorViewButton, false);
             StyleNavigationButton(reportViewButton, true);
-            StyleNavigationButton(historyViewButton, false);
             StyleNavigationButton(speedTestViewButton, false);
-        }
-
-        private void ShowHistoryView()
-        {
-            monitorPage.Visible = false;
-            reportPage.Visible = false;
-            historyPage.Visible = true;
-            speedTestPage.Visible = false;
-            historyPage.BringToFront();
-            StyleNavigationButton(monitorViewButton, false);
-            StyleNavigationButton(reportViewButton, false);
-            StyleNavigationButton(historyViewButton, true);
-            StyleNavigationButton(speedTestViewButton, false);
-            RenderSpeedHistory();
         }
 
         private void ShowSpeedTestView()
         {
             monitorPage.Visible = false;
             reportPage.Visible = false;
-            historyPage.Visible = false;
             speedTestPage.Visible = true;
             speedTestPage.BringToFront();
             StyleNavigationButton(monitorViewButton, false);
             StyleNavigationButton(reportViewButton, false);
-            StyleNavigationButton(historyViewButton, false);
             StyleNavigationButton(speedTestViewButton, true);
-        }
-
-        private void OpenHistoryForSpeedTest(string provider)
-        {
-            if (historyProviderInput != null) historyProviderInput.Text = provider ?? String.Empty;
-            ShowHistoryView();
-            if (historyProviderInput != null) historyProviderInput.Focus();
         }
 
         private static void StyleNavigationButton(GlassButton button, bool active)
@@ -4459,89 +3835,6 @@ namespace NetworkMonitorApp
                 csvRow.IndexOf("1.1.1.1", StringComparison.Ordinal) < 0 && csvRow.IndexOf("2606:4700:4700::1111", StringComparison.Ordinal) < 0;
             results.Add((csvSchema ? "PASS" : "FAIL") + " | CSV schema migration guard | " + (csvSchema ? "new schema recognized; old file will be rotated intact" : "CSV schema guard failed"));
 
-            string historyTestRoot = Path.Combine(Path.GetTempPath(), "NetworkMonitor-History-SelfTest-" + Guid.NewGuid().ToString("N"));
-            string historyTestPath = Path.Combine(historyTestRoot, "speed-test-history.json");
-            bool historyRoundTrip = false;
-            bool historyDelete = false;
-            bool historyCsv = false;
-            bool historyValidation = false;
-            bool historyCorruptPreserved = false;
-            try
-            {
-                Directory.CreateDirectory(historyTestRoot);
-                SpeedTestHistoryRecord older = new SpeedTestHistoryRecord
-                {
-                    Id = Guid.NewGuid().ToString("D"), TimestampLocal = DateTimeOffset.Now.AddMinutes(-1).ToString("o", CultureInfo.InvariantCulture),
-                    Provider = "Ookla", ConnectionType = "Wi-Fi", DownloadMbps = 180.5, UploadMbps = 28.25, PingMs = 12
-                };
-                SpeedTestHistoryRecord newer = new SpeedTestHistoryRecord
-                {
-                    Id = Guid.NewGuid().ToString("D"), TimestampLocal = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture),
-                    Provider = "Test, \"Quoted\"", ConnectionType = "Ethernet", DownloadMbps = 940, UploadMbps = 94, PingMs = 7.5
-                };
-                List<SpeedTestHistoryRecord> entries = new List<SpeedTestHistoryRecord> { older, newer };
-                SpeedTestHistoryStore.Save(historyTestPath, entries);
-                List<SpeedTestHistoryRecord> loaded = SpeedTestHistoryStore.Load(historyTestPath);
-                historyRoundTrip = loaded.Count == 2 && loaded[0].Id == newer.Id && loaded[1].Id == older.Id &&
-                    loaded[0].DownloadMbps == 940 && loaded[0].Provider == newer.Provider;
-                historyCsv = SpeedTestHistoryStore.FormatCsv(loaded).Contains("\"Test, \"\"Quoted\"\"\"") &&
-                    SpeedTestHistoryStore.FormatCsv(loaded).Contains(",Manual") &&
-                    SpeedTestHistoryStore.FormatCsv(loaded).IndexOf("IP", StringComparison.OrdinalIgnoreCase) < 0;
-                historyDelete = SpeedTestHistoryStore.RemoveById(loaded, older.Id) && loaded.Count == 1 &&
-                    !SpeedTestHistoryStore.RemoveById(loaded, Guid.NewGuid().ToString("D"));
-                bool validLimits = SpeedTestHistoryStore.IsValidMeasurement(0, 1000000) &&
-                    SpeedTestHistoryStore.IsValidMeasurement(1000000, 1000000) &&
-                    !SpeedTestHistoryStore.IsValidMeasurement(Double.NaN, 1000000) &&
-                    !SpeedTestHistoryStore.IsValidMeasurement(Double.PositiveInfinity, 1000000) &&
-                    !SpeedTestHistoryStore.IsValidMeasurement(1000001, 1000000);
-                SpeedTestHistoryRecord invalidRecord = new SpeedTestHistoryRecord
-                {
-                    Id = Guid.NewGuid().ToString("D"), TimestampLocal = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture),
-                    Provider = "Test", ConnectionType = "Unknown", DownloadMbps = 10, UploadMbps = 2, PingMs = 5
-                };
-                historyValidation = validLimits && !SpeedTestHistoryStore.IsValid(invalidRecord);
-                string beforeCorruption = File.ReadAllText(historyTestPath, Encoding.UTF8);
-                File.WriteAllText(historyTestPath, "{invalid json", Encoding.UTF8);
-                try { SpeedTestHistoryStore.Load(historyTestPath); } catch { }
-                historyCorruptPreserved = File.ReadAllText(historyTestPath, Encoding.UTF8) == "{invalid json" && beforeCorruption.Length > 0;
-            }
-            catch { }
-            finally
-            {
-                string temporaryPath = historyTestPath + ".tmp";
-                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
-                if (File.Exists(historyTestPath)) File.Delete(historyTestPath);
-                if (Directory.Exists(historyTestRoot)) Directory.Delete(historyTestRoot, false);
-            }
-            results.Add((historyRoundTrip ? "PASS" : "FAIL") + " | speed history persistence | " + (historyRoundTrip ? "JSON survives reload and sorts newest first" : "history round trip or sort failed"));
-            results.Add((historyDelete ? "PASS" : "FAIL") + " | speed history deletion | " + (historyDelete ? "deletes only the selected stable ID" : "history deletion behavior failed"));
-            results.Add((historyCsv ? "PASS" : "FAIL") + " | speed history CSV export | " + (historyCsv ? "escapes custom provider names and marks manual entries" : "CSV escaping/source marker failed"));
-            results.Add((historyValidation ? "PASS" : "FAIL") + " | speed history input validation | " + (historyValidation ? "rejects non-finite, out-of-range, and unsupported connection values" : "history validation accepted unsafe values"));
-            results.Add((historyCorruptPreserved ? "PASS" : "FAIL") + " | speed history corruption safety | " + (historyCorruptPreserved ? "invalid file is rejected without overwriting it" : "invalid history file was changed"));
-
-            bool historyLocalization = Localization.Get(AppLanguage.English, "HistoryTab") == "History" &&
-                Localization.Get(AppLanguage.Romanian, "HistoryTab") == "Istoric" &&
-                Localization.Get(AppLanguage.Romanian, "HistoryDownload") == "Descărcare (Mbps)" &&
-                Localization.Get(AppLanguage.Romanian, "HistoryPrivacyNote").IndexOf("nu trimite", StringComparison.OrdinalIgnoreCase) >= 0;
-            results.Add((historyLocalization ? "PASS" : "FAIL") + " | speed history localization and privacy copy | " + (historyLocalization ? "English and Romanian labels disclose local-only storage" : "history labels or privacy text missing"));
-
-            bool historyPageLocalization = false;
-            try
-            {
-                using (MainForm form = new MainForm())
-                {
-                    Panel page = (Panel)typeof(MainForm).GetField("historyPage", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    GlassComboBox selector = (GlassComboBox)typeof(MainForm).GetField("languageSelector", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    DataGridView historyGrid = (DataGridView)typeof(MainForm).GetField("historyGrid", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    selector.SelectedIndex = 1;
-                    bool romanianHeader = historyGrid.Columns[0].HeaderText == "Data și ora";
-                    selector.SelectedIndex = 0;
-                    historyPageLocalization = page.Controls.Count > 0 && romanianHeader && historyGrid.Columns[0].HeaderText == "Date and time";
-                }
-            }
-            catch { historyPageLocalization = false; }
-            results.Add((historyPageLocalization ? "PASS" : "FAIL") + " | speed history page and instant language switch | " + (historyPageLocalization ? "page renders and grid headers switch both ways" : "history page initialization or localization failed"));
-
             bool speedProviderPolicy = SpeedTestProviderCatalog.All.Count == 4 &&
                 SpeedTestProviderCatalog.Find("Ookla") != null && SpeedTestProviderCatalog.Find("Netograf") != null &&
                 SpeedTestProviderCatalog.Find("DIGI") != null && SpeedTestProviderCatalog.Find("Vodafone") != null &&
@@ -4556,15 +3849,15 @@ namespace NetworkMonitorApp
                 !SpeedTestNavigationPolicy.ShouldFallback(true, 302);
             bool speedPageLocalization = Localization.Get(AppLanguage.English, "SpeedTab") == "Speed test" &&
                 Localization.Get(AppLanguage.Romanian, "SpeedTab") == "Test de viteză" &&
-                Localization.Get(AppLanguage.Romanian, "SpeedDisclosure").IndexOf("nu le salvează în istoric", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                Localization.Get(AppLanguage.English, "SpeedDisclosure").IndexOf("save them to history", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                Localization.Get(AppLanguage.Romanian, "SpeedDisclosure").IndexOf("nu citește și nu salvează rezultatele", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                Localization.Get(AppLanguage.English, "SpeedDisclosure").IndexOf("does not read or save results", StringComparison.OrdinalIgnoreCase) >= 0 &&
                 Localization.Get(AppLanguage.Romanian, "SpeedDisclosure").IndexOf("se șterge la închiderea aplicației", StringComparison.OrdinalIgnoreCase) >= 0 &&
                 Localization.Get(AppLanguage.English, "SpeedDisclosure").IndexOf("removed when the app closes", StringComparison.OrdinalIgnoreCase) >= 0;
             results.Add((speedProviderPolicy ? "PASS" : "FAIL") + " | speed provider and HTTPS navigation policy | " + (speedProviderPolicy ? "four fixed providers, HTTPS-only, provider hosts allowlisted" : "provider catalog or navigation allowlist mismatch"));
             results.Add((speedFallbackPolicy ? "PASS" : "FAIL") + " | speed-page error and browser-fallback policy | " + (speedFallbackPolicy ? "navigation errors and HTTP 4xx/5xx offer fallback; successful responses do not" : "fallback classification mismatch"));
-            results.Add((speedPageLocalization ? "PASS" : "FAIL") + " | speed-test notices and localization | " + (speedPageLocalization ? "English and Romanian disclose traffic, provider processing, manual/local history, and no AI transfer" : "speed-test translations or privacy notice missing"));
+            results.Add((speedPageLocalization ? "PASS" : "FAIL") + " | speed-test notices and localization | " + (speedPageLocalization ? "English and Romanian disclose traffic, provider processing, no result storage, and no AI transfer" : "speed-test translations or privacy notice missing"));
 
-            bool speedPageStartupAndHistory = false;
+            bool speedPageStartup = false;
             string speedPageStartupDetails = "not run";
             try
             {
@@ -4574,27 +3867,24 @@ namespace NetworkMonitorApp
                     FieldInfo webViewField = typeof(SpeedTestPage).GetField("webView", BindingFlags.Instance | BindingFlags.NonPublic);
                     ComboBox providerSelector = (ComboBox)typeof(SpeedTestPage).GetField("providerSelector", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(page);
                     GlassButton fallbackButton = (GlassButton)typeof(SpeedTestPage).GetField("browserButton", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(page);
-                    GlassButton historyButton = (GlassButton)typeof(SpeedTestPage).GetField("historyButton", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(page);
                     GlassComboBox languageSelector = (GlassComboBox)typeof(MainForm).GetField("languageSelector", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    Panel historyPage = (Panel)typeof(MainForm).GetField("historyPage", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
-                    ComboBox historyProvider = (ComboBox)typeof(MainForm).GetField("historyProviderInput", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
                     bool noStartupWebView = webViewField.GetValue(page) == null;
                     languageSelector.SelectedIndex = 1;
                     bool romanian = page.Controls.OfType<Label>().Any(delegate(Label label) { return label.Text == "Test de viteză"; });
                     languageSelector.SelectedIndex = 0;
                     bool english = page.Controls.OfType<Label>().Any(delegate(Label label) { return label.Text == "Speed test"; });
                     providerSelector.SelectedIndex = 2;
-                    typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(historyButton, new object[] { EventArgs.Empty });
                     page.ApplyNavigationResult(false, 0);
                     bool errorShowsFallback = fallbackButton.Enabled;
                     page.ApplyNavigationResult(true, 200);
                     bool fallbackAvailableAfterLoad = fallbackButton.Enabled;
-                    speedPageStartupAndHistory = noStartupWebView && romanian && english && historyProvider.Text == "DIGI" && errorShowsFallback && fallbackAvailableAfterLoad;
-                    speedPageStartupDetails = "webview=" + noStartupWebView + ", ro=" + romanian + ", en=" + english + ", provider=" + historyProvider.Text + ", errorFallback=" + errorShowsFallback + ", fallbackAfterLoad=" + fallbackAvailableAfterLoad;
+                    bool historyRemoved = typeof(MainForm).GetField("historyPage", BindingFlags.Instance | BindingFlags.NonPublic) == null && typeof(SpeedTestPage).GetField("historyButton", BindingFlags.Instance | BindingFlags.NonPublic) == null;
+                    speedPageStartup = noStartupWebView && romanian && english && errorShowsFallback && fallbackAvailableAfterLoad && historyRemoved;
+                    speedPageStartupDetails = "webview=" + noStartupWebView + ", ro=" + romanian + ", en=" + english + ", errorFallback=" + errorShowsFallback + ", fallbackAfterLoad=" + fallbackAvailableAfterLoad + ", historyRemoved=" + historyRemoved;
                 }
             }
-            catch (Exception ex) { speedPageStartupAndHistory = false; speedPageStartupDetails = ex.GetType().Name + ": " + ex.Message; }
-            results.Add((speedPageStartupAndHistory ? "PASS" : "FAIL") + " | speed page startup, language switch, and history handoff | " + (speedPageStartupAndHistory ? "no embedded test starts automatically; page switches languages and presets the selected provider in local history" : speedPageStartupDetails));
+            catch (Exception ex) { speedPageStartup = false; speedPageStartupDetails = ex.GetType().Name + ": " + ex.Message; }
+            results.Add((speedPageStartup ? "PASS" : "FAIL") + " | speed page startup, language switch, and history removal | " + (speedPageStartup ? "only the provider test remains; language switches and browser fallback work" : speedPageStartupDetails));
 
             bool chartRenders = false;
             try
@@ -4614,25 +3904,6 @@ namespace NetworkMonitorApp
             }
             catch { chartRenders = false; }
             results.Add((chartRenders ? "PASS" : "FAIL") + " | latency chart rendering | " + (chartRenders ? "draws gateway and Internet samples" : "chart rendering failed"));
-            bool speedChartRenders = false;
-            try
-            {
-                using (SpeedHistoryChartPanel chart = new SpeedHistoryChartPanel())
-                using (Bitmap bitmap = new Bitmap(500, 190))
-                {
-                    chart.Size = new Size(500, 190);
-                    chart.SetRecords(new SpeedTestHistoryRecord[]
-                    {
-                        new SpeedTestHistoryRecord { Id = Guid.NewGuid().ToString("D"), TimestampLocal = DateTimeOffset.Now.AddMinutes(-1).ToString("o", CultureInfo.InvariantCulture), Provider = "Ookla", ConnectionType = "Wi-Fi", DownloadMbps = 120, UploadMbps = 20, PingMs = 16 },
-                        new SpeedTestHistoryRecord { Id = Guid.NewGuid().ToString("D"), TimestampLocal = DateTimeOffset.Now.ToString("o", CultureInfo.InvariantCulture), Provider = "Netograf", ConnectionType = "Ethernet", DownloadMbps = 240, UploadMbps = 35, PingMs = 9 }
-                    });
-                    chart.DrawToBitmap(bitmap, new Rectangle(0, 0, 500, 190));
-                    speedChartRenders = true;
-                }
-            }
-            catch { speedChartRenders = false; }
-            results.Add((speedChartRenders ? "PASS" : "FAIL") + " | speed history chart rendering | " + (speedChartRenders ? "plots local download and upload history" : "speed chart rendering failed"));
-
             string text = String.Join(Environment.NewLine, results.ToArray());
             if (!String.IsNullOrWhiteSpace(outputPath))
                 File.WriteAllText(outputPath, text, new UTF8Encoding(true));

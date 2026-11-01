@@ -9,11 +9,8 @@ The app checks for a newer version at startup. It will notify you, ask before do
 3. Click Stop and analyze to view the report. CSV and report files are saved locally under:
    %LOCALAPPDATA%\NetworkMonitor\Logs
 
-Speed test history:
-Open History to record results from a speed test service of your choice. Enter provider, connection type, download, upload, and ping; the app timestamps and charts each entry. History stays in this Windows user account under %LOCALAPPDATA%\NetworkMonitor. You can delete entries in the app or export CSV. The app does not run tests or import provider results automatically, and does not send history to AI.
-
-Embedded speed test page:
-Open Speed test, choose Ookla, Netograf, DIGI, or Vodafone, review the traffic and privacy notice, then click Load test. Microsoft WebView2 Runtime is required; if it is missing or the provider page fails, the app offers an explicit Open in browser fallback. Provider pages load as top-level pages; the app does not bypass embedding restrictions, scrape results, or transmit speed-test values to AI. Providers independently process traffic and may receive your public IP and browser/connection details. Speed tests can use substantial data and affect monitoring or other apps. A temporary WebView2 profile is removed when the app closes. Enter results manually in History. Vodafone's web endpoint may be unavailable; the app will show a fallback rather than claiming the test succeeded.
+Speed test:
+Open Speed test, choose Ookla, Netograf, DIGI, or Vodafone, review the traffic and privacy notice, then click Load test. Microsoft WebView2 Runtime is required; if it is missing or the provider page fails, the app offers an explicit Open in browser fallback. Provider pages load as top-level pages; the app does not bypass embedding restrictions, scrape or save results, or transmit speed-test values to AI. Providers independently process traffic and may receive your public IP and browser/connection details. Speed tests can use substantial data and affect monitoring or other apps. A temporary WebView2 profile is removed when the app closes. The app provides the external test only and does not retain speed-test results. Vodafone's web endpoint may be unavailable; the app will show a fallback rather than claiming the test succeeded.
 
 Optional AI explanation:
 The complete evidence-based local diagnosis is always available. Select AI options to configure local Ollama or a Gemini/Groq API key that you own. Continue with ChatGPT remains available for eligible ChatGPT accounts and requires separate approval. AI is supplementary. No shared key is included and the publisher does not pay for other users.
