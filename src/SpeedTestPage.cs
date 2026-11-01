@@ -74,6 +74,7 @@ namespace NetworkMonitorApp
         private const string WinFormsResource = "NetworkMonitorApp.WebView2.Microsoft.Web.WebView2.WinForms.dll";
         private const string LoaderX86Resource = "NetworkMonitorApp.WebView2.x86.WebView2Loader.dll";
         private const string LoaderX64Resource = "NetworkMonitorApp.WebView2.x64.WebView2Loader.dll";
+        private static readonly Assembly AppAssembly = typeof(WebView2EmbeddedRuntime).Assembly;
         private static readonly object Gate = new object();
         private static IntPtr loaderHandle;
 
@@ -81,6 +82,36 @@ namespace NetworkMonitorApp
         {
             AppDomain.CurrentDomain.AssemblyResolve -= ResolveAssembly;
             AppDomain.CurrentDomain.AssemblyResolve += ResolveAssembly;
+            // Load embedded managed WebView2 assemblies before WinForms creates any
+            // controls. This also makes the test executable independent of adjacent DLLs.
+            LoadEmbeddedAssembly(CoreResource);
+            LoadEmbeddedAssembly(WinFormsResource);
+        }
+
+        private static void LoadEmbeddedAssembly(string resource)
+        {
+            AssemblyName expected = new AssemblyName(resource == CoreResource ? "Microsoft.Web.WebView2.Core" : "Microsoft.Web.WebView2.WinForms");
+            foreach (Assembly item in AppDomain.CurrentDomain.GetAssemblies())
+                if (String.Equals(item.GetName().Name, expected.Name, StringComparison.Ordinal)) return;
+            using (Stream stream = OpenEmbeddedResource(resource))
+            {
+                if (stream == null) throw new FileNotFoundException("An embedded WebView2 managed assembly is missing: " + resource);
+                byte[] image = new byte[stream.Length];
+                int read = stream.Read(image, 0, image.Length);
+                if (read != image.Length) throw new BadImageFormatException("An embedded WebView2 assembly is incomplete.");
+                Assembly.Load(image);
+            }
+        }
+
+        private static Stream OpenEmbeddedResource(string resource)
+        {
+            Stream stream = AppAssembly.GetManifestResourceStream(resource);
+            if (stream != null) return stream;
+            string assemblySuffix = resource.IndexOf("WinForms", StringComparison.Ordinal) >= 0 ? "Microsoft.Web.WebView2.WinForms.dll" : "Microsoft.Web.WebView2.Core.dll";
+            foreach (string name in AppAssembly.GetManifestResourceNames())
+                if (name.EndsWith(assemblySuffix, StringComparison.Ordinal))
+                    return AppAssembly.GetManifestResourceStream(name);
+            return null;
         }
 
         internal static void PrepareNativeLoader()
@@ -133,7 +164,7 @@ namespace NetworkMonitorApp
             string resource = name == "Microsoft.Web.WebView2.Core" ? CoreResource :
                 name == "Microsoft.Web.WebView2.WinForms" ? WinFormsResource : null;
             if (resource == null) return null;
-            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(resource))
+            using (Stream stream = OpenEmbeddedResource(resource))
             {
                 if (stream == null) return null;
                 byte[] image = new byte[stream.Length];
