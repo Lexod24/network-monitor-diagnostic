@@ -27,7 +27,7 @@ namespace NetworkMonitorApp
                 case "CopyReport": return ro ? "Copiaza diagnosticul" : "Copy diagnosis";
                 case "RouteTraceButton": return ro ? "Testeaza ruta" : "Trace route";
                 case "RouteTraceConfirmTitle": return ro ? "Test de ruta" : "Route trace";
-                case "RouteTraceConfirmPrompt": return ro ? "Testul trimite probe ICMP cu volum redus catre 1.1.1.1. Routerele intermediare pot aparea ca adrese IP. Rezultatul este afisat doar pe acest calculator; nu este salvat sau trimis. Unele routere nu raspund la aceste probe. Continui?" : "This sends a small number of ICMP TTL probes to 1.1.1.1. Intermediate routers may appear as IP addresses. Results are shown only on this PC and are not saved or sent. Some routers do not reply. Continue?";
+                case "RouteTraceConfirmPrompt": return ro ? "Testul trimite probe ICMP cu volum redus catre o tinta IPv4 sau IPv6, in functie de ruta disponibila. Routerele intermediare pot aparea ca adrese IP. Rezultatul este afisat doar pe acest calculator; nu este salvat sau trimis. Unele routere nu raspund. Continui?" : "This sends a small number of ICMP TTL probes to an IPv4 or IPv6 target, based on the available route. Intermediate routers may appear as IP addresses. Results are shown only on this PC and are not saved or sent. Some routers do not reply. Continue?";
                 case "RouteTraceRunning": return ro ? "Se testeaza ruta..." : "Tracing route...";
                 case "ContinueChatGPT": return "Continue with ChatGPT";
                 case "AISettings": return ro ? "Setari AI" : "AI options";
@@ -102,6 +102,9 @@ namespace NetworkMonitorApp
                 case "WeakWiFiSignal": return ro ? "Semnal Wi-Fi slab" : "Weak Wi-Fi signal";
                 case "GatewayUnreachable": return ro ? "Gateway fara raspuns" : "Gateway did not respond";
                 case "InternetTargetDisagreement": return ro ? "Tinte Internet cu raspunsuri diferite" : "Internet targets disagree";
+                case "IPv6TargetDisagreement": return ro ? "Tinte IPv6 cu raspunsuri diferite" : "IPv6 targets disagree";
+                case "IPv6OnlyReachable": return ro ? "Acces confirmat prin IPv6" : "IPv6 access confirmed";
+                case "CaptivePortalSuspected": return ro ? "Portal captiv sau interceptare HTTPS suspectata" : "Captive portal or HTTPS interception suspected";
                 case "ActiveRouteChanged": return ro ? "Ruta de retea a trecut pe alta interfata" : "Windows switched the active route interface";
                 case "ICMPUnavailableHTTPSOk": return ro ? "Ping filtrat, HTTPS reusit" : "Ping unavailable, HTTPS succeeded";
                 case "InternetOutage": return ro ? "Probe Internet neconcludente" : "Internet probes inconclusive";
