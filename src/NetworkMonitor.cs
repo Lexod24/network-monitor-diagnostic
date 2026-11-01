@@ -720,10 +720,23 @@ namespace NetworkMonitorApp
         }
     }
 
+    internal sealed class RouteTraceHop
+    {
+        public int Number;
+        public string Probe1;
+        public string Probe2;
+        public string Probe3;
+        public string Address;
+        public bool Responded;
+    }
+
     internal static class RouteTrace
     {
         internal const string Target = "1.1.1.1";
         internal const string Ipv6Target = "2606:4700:4700::1111";
+        private static readonly Regex HopLineRegex = new Regex(
+            @"^\s*(?<hop>\d+)\s+(?<p1>\*|\d+(?:[\.,]\d+)?\s*\p{L}+)\s+(?<p2>\*|\d+(?:[\.,]\d+)?\s*\p{L}+)\s+(?<p3>\*|\d+(?:[\.,]\d+)?\s*\p{L}+)\s*(?<address>.*?)\s*$",
+            RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         internal static string BuildArguments()
         {
@@ -738,6 +751,39 @@ namespace NetworkMonitorApp
         internal static bool SelectIpv6Route(bool ipv4RouteAvailable, bool ipv6RouteAvailable)
         {
             return !ipv4RouteAvailable && ipv6RouteAvailable;
+        }
+
+        internal static List<RouteTraceHop> ParseHops(string output)
+        {
+            List<RouteTraceHop> hops = new List<RouteTraceHop>();
+            if (String.IsNullOrWhiteSpace(output)) return hops;
+            foreach (string line in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                Match match = HopLineRegex.Match(line);
+                if (!match.Success) continue;
+                int number;
+                if (!Int32.TryParse(match.Groups["hop"].Value, NumberStyles.None, CultureInfo.InvariantCulture, out number)) continue;
+                string probe1 = match.Groups["p1"].Value.Trim();
+                string probe2 = match.Groups["p2"].Value.Trim();
+                string probe3 = match.Groups["p3"].Value.Trim();
+                bool responded = probe1 != "*" || probe2 != "*" || probe3 != "*";
+                string address = match.Groups["address"].Value.Trim();
+                if (!responded || address == "*") address = "";
+                hops.Add(new RouteTraceHop { Number = number, Probe1 = probe1, Probe2 = probe2, Probe3 = probe3, Address = address, Responded = responded });
+            }
+            return hops;
+        }
+
+        internal static string Summarize(IList<RouteTraceHop> hops, string target, AppLanguage language)
+        {
+            if (hops == null || hops.Count == 0) return Localization.Get(language, "RouteTraceSummaryUnavailable");
+            RouteTraceHop last = hops[hops.Count - 1];
+            if (last.Responded && !String.IsNullOrWhiteSpace(last.Address) &&
+                last.Address.IndexOf(target ?? "", StringComparison.OrdinalIgnoreCase) >= 0)
+                return Localization.Get(language, "RouteTraceSummaryReached");
+            if (!hops.Any(delegate(RouteTraceHop hop) { return hop.Responded; }))
+                return Localization.Get(language, "RouteTraceSummaryNoReplies");
+            return Localization.Get(language, "RouteTraceSummaryPartial");
         }
 
         internal static string SelectedTarget
@@ -2869,49 +2915,250 @@ namespace NetworkMonitorApp
 
         private void ShowRouteTraceResult(string result)
         {
+            List<RouteTraceHop> hops = RouteTrace.ParseHops(result);
+            string target = RouteTrace.SelectedTarget;
+            string summary = RouteTrace.Summarize(hops, target, language);
+            bool reachedTarget = hops.Count > 0 && hops[hops.Count - 1].Responded &&
+                !String.IsNullOrWhiteSpace(hops[hops.Count - 1].Address) &&
+                hops[hops.Count - 1].Address.IndexOf(target, StringComparison.OrdinalIgnoreCase) >= 0;
+            bool anyResponse = hops.Any(delegate(RouteTraceHop hop) { return hop.Responded; });
             using (Form dialog = new Form())
             {
-                dialog.Text = Localization.Get(language, "RouteTraceButton") + " - " + RouteTrace.SelectedTarget;
+                dialog.Text = Localization.Get(language, "RouteTraceDialogTitle") + " - " + target;
                 dialog.StartPosition = FormStartPosition.CenterParent;
-                dialog.Size = new Size(900, 620);
-                dialog.MinimumSize = new Size(700, 460);
+                dialog.FormBorderStyle = FormBorderStyle.None;
+                dialog.Size = new Size(930, 660);
+                dialog.MinimumSize = new Size(740, 520);
                 dialog.BackColor = LiquidGlassTheme.Window;
                 dialog.Font = new Font("Segoe UI", 9F);
-                Label note = new Label();
-                note.Dock = DockStyle.Top;
-                note.Height = 76;
-                note.Text = language == AppLanguage.Romanian
-                    ? "Rezultatul ramane doar pe acest calculator si nu este salvat sau trimis. Asteriscurile inseamna ca un router nu a raspuns; nu dovedesc o defectiune."
-                    : "The result stays on this PC and is not saved or sent. Asterisks mean a router did not reply; they do not prove a fault.";
-                note.Padding = new Padding(22, 16, 22, 12);
-                note.ForeColor = LiquidGlassTheme.SecondaryText;
-                note.BackColor = LiquidGlassTheme.WindowRaised;
-                TextBox output = new TextBox();
-                output.Dock = DockStyle.Fill;
-                output.Multiline = true;
-                output.ReadOnly = true;
-                output.ScrollBars = ScrollBars.Both;
-                output.WordWrap = false;
-                output.Font = new Font("Cascadia Mono", 9F);
-                output.BackColor = Color.FromArgb(255, 15, 20, 28);
-                output.ForeColor = LiquidGlassTheme.Text;
-                output.BorderStyle = BorderStyle.None;
-                output.Margin = new Padding(18);
-                output.Text = result;
-                GlassButton close = new GlassButton();
-                close.Text = language == AppLanguage.Romanian ? "Închide" : "Close";
-                close.DialogResult = DialogResult.OK;
-                close.Dock = DockStyle.Bottom;
-                close.Height = 44;
-                close.BackColor = LiquidGlassTheme.Sapphire;
-                close.ForeColor = Color.FromArgb(9, 15, 24);
-                close.Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold);
-                close.Cursor = Cursors.Hand;
-                dialog.Controls.Add(output);
-                dialog.Controls.Add(close);
-                dialog.Controls.Add(note);
+
+                TableLayoutPanel layout = new TableLayoutPanel
+                {
+                    Dock = DockStyle.Fill,
+                    BackColor = LiquidGlassTheme.Window,
+                    Padding = new Padding(12),
+                    ColumnCount = 1,
+                    RowCount = 5
+                };
+                layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 64F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 68F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 76F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+                layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56F));
+                dialog.Controls.Add(layout);
+
+                Panel titleBar = new Panel { Dock = DockStyle.Fill, BackColor = LiquidGlassTheme.WindowRaised, Padding = new Padding(18, 8, 10, 4) };
+                Label title = new Label
+                {
+                    Text = Localization.Get(language, "RouteTraceDialogTitle"),
+                    Location = new Point(16, 6),
+                    Size = new Size(610, 27),
+                    Font = new Font("Segoe UI Semibold", 15F, FontStyle.Bold),
+                    ForeColor = LiquidGlassTheme.Text,
+                    AutoEllipsis = true
+                };
+                Label subtitle = new Label
+                {
+                    Text = Localization.Format(language, "RouteTraceSubtitle", target),
+                    Location = new Point(18, 34),
+                    Size = new Size(610, 19),
+                    Font = new Font("Segoe UI", 8.5F),
+                    ForeColor = LiquidGlassTheme.MutedText,
+                    AutoEllipsis = true
+                };
+                GlassButton titleClose = new GlassButton
+                {
+                    Text = "×",
+                    Size = new Size(38, 38),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    BackColor = LiquidGlassTheme.GlassInset,
+                    ForeColor = LiquidGlassTheme.Text,
+                    Font = new Font("Segoe UI", 16F),
+                    Cursor = Cursors.Hand
+                };
+                titleClose.Location = new Point(Math.Max(18, titleBar.ClientSize.Width - 52), 9);
+                titleBar.Resize += delegate { titleClose.Location = new Point(Math.Max(18, titleBar.ClientSize.Width - 52), 9); };
+                titleClose.Click += delegate { dialog.Close(); };
+                titleBar.Controls.Add(title);
+                titleBar.Controls.Add(subtitle);
+                titleBar.Controls.Add(titleClose);
+                titleBar.MouseDown += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) GlassWindowEffects.BeginWindowDrag(dialog); };
+                title.MouseDown += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) GlassWindowEffects.BeginWindowDrag(dialog); };
+                subtitle.MouseDown += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) GlassWindowEffects.BeginWindowDrag(dialog); };
+                layout.Controls.Add(titleBar, 0, 0);
+
+                SoftSurfacePanel privacy = new SoftSurfacePanel
+                {
+                    Dock = DockStyle.Fill,
+                    CornerRadius = 15,
+                    BorderColor = LiquidGlassTheme.Stroke,
+                    Padding = new Padding(16, 8, 16, 8),
+                    Margin = new Padding(0, 5, 0, 4)
+                };
+                Label privacyText = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    Text = Localization.Get(language, "RouteTracePrivacyNote"),
+                    ForeColor = LiquidGlassTheme.SecondaryText,
+                    Font = new Font("Segoe UI", 9F),
+                    TextAlign = ContentAlignment.MiddleLeft,
+                    AutoEllipsis = true
+                };
+                privacy.Controls.Add(privacyText);
+                layout.Controls.Add(privacy, 0, 1);
+
+                SoftSurfacePanel summaryCard = new SoftSurfacePanel
+                {
+                    Dock = DockStyle.Fill,
+                    CornerRadius = 16,
+                    BorderColor = LiquidGlassTheme.Stroke,
+                    Padding = new Padding(15, 8, 15, 7),
+                    Margin = new Padding(0, 3, 0, 4)
+                };
+                Label stateDot = new Label
+                {
+                    Text = "●",
+                    Location = new Point(15, 20),
+                    Size = new Size(20, 22),
+                    Font = new Font("Segoe UI", 11F, FontStyle.Bold),
+                    ForeColor = reachedTarget ? LiquidGlassTheme.Good : (anyResponse ? LiquidGlassTheme.Warning : LiquidGlassTheme.MutedText),
+                    TextAlign = ContentAlignment.MiddleCenter
+                };
+                Label summaryLabel = new Label
+                {
+                    Text = summary,
+                    Location = new Point(42, 11),
+                    Size = new Size(650, 27),
+                    Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold),
+                    ForeColor = LiquidGlassTheme.Text,
+                    AutoEllipsis = true
+                };
+                Label hopCount = new Label
+                {
+                    Text = Localization.Get(language, "RouteTraceHopCount") + "  ·  " + hops.Count.ToString(CultureInfo.InvariantCulture),
+                    Location = new Point(43, 38),
+                    Size = new Size(420, 17),
+                    Font = new Font("Segoe UI", 8F),
+                    ForeColor = LiquidGlassTheme.MutedText,
+                    AutoEllipsis = true
+                };
+                summaryCard.Controls.Add(stateDot);
+                summaryCard.Controls.Add(summaryLabel);
+                summaryCard.Controls.Add(hopCount);
+                layout.Controls.Add(summaryCard, 0, 2);
+
+                SoftSurfacePanel resultsCard = new SoftSurfacePanel
+                {
+                    Dock = DockStyle.Fill,
+                    CornerRadius = 18,
+                    BorderColor = LiquidGlassTheme.Stroke,
+                    Padding = new Padding(10),
+                    Margin = new Padding(0, 3, 0, 4)
+                };
+                DataGridView grid = new DataGridView
+                {
+                    Dock = DockStyle.Fill,
+                    BorderStyle = BorderStyle.None,
+                    BackgroundColor = LiquidGlassTheme.WindowRaised,
+                    GridColor = Color.FromArgb(42, 54, 70),
+                    RowHeadersVisible = false,
+                    ColumnHeadersVisible = true,
+                    EnableHeadersVisualStyles = false,
+                    ColumnHeadersHeight = 38,
+                    ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.DisableResizing,
+                    RowTemplate = { Height = 36 },
+                    AllowUserToAddRows = false,
+                    AllowUserToDeleteRows = false,
+                    AllowUserToResizeRows = false,
+                    AllowUserToResizeColumns = false,
+                    ReadOnly = true,
+                    MultiSelect = false,
+                    SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                    AutoSizeRowsMode = DataGridViewAutoSizeRowsMode.None,
+                    ScrollBars = ScrollBars.Vertical,
+                    Font = new Font("Segoe UI", 9F),
+                    CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal,
+                    ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None,
+                    DefaultCellStyle = new DataGridViewCellStyle
+                    {
+                        BackColor = LiquidGlassTheme.WindowRaised,
+                        ForeColor = LiquidGlassTheme.Text,
+                        SelectionBackColor = Color.FromArgb(255, 35, 54, 78),
+                        SelectionForeColor = LiquidGlassTheme.Text,
+                        Padding = new Padding(8, 2, 8, 2)
+                    },
+                    AlternatingRowsDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(255, 19, 25, 35), ForeColor = LiquidGlassTheme.Text, SelectionBackColor = Color.FromArgb(255, 35, 54, 78), SelectionForeColor = LiquidGlassTheme.Text }
+                };
+                grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(255, 24, 31, 43);
+                grid.ColumnHeadersDefaultCellStyle.ForeColor = LiquidGlassTheme.SecondaryText;
+                grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 8.5F, FontStyle.Bold);
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "hop", HeaderText = Localization.Get(language, "RouteTraceColumnHop"), Width = 62, SortMode = DataGridViewColumnSortMode.NotSortable });
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "probe1", HeaderText = Localization.Get(language, "RouteTraceColumnProbe1"), Width = 92, SortMode = DataGridViewColumnSortMode.NotSortable });
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "probe2", HeaderText = Localization.Get(language, "RouteTraceColumnProbe2"), Width = 92, SortMode = DataGridViewColumnSortMode.NotSortable });
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "probe3", HeaderText = Localization.Get(language, "RouteTraceColumnProbe3"), Width = 92, SortMode = DataGridViewColumnSortMode.NotSortable });
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "address", HeaderText = Localization.Get(language, "RouteTraceColumnAddress"), AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 120, SortMode = DataGridViewColumnSortMode.NotSortable });
+                grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "response", HeaderText = Localization.Get(language, "RouteTraceColumnResponse"), Width = 112, SortMode = DataGridViewColumnSortMode.NotSortable });
+                foreach (RouteTraceHop hop in hops)
+                {
+                    int row = grid.Rows.Add(hop.Number.ToString(CultureInfo.InvariantCulture), hop.Probe1, hop.Probe2, hop.Probe3,
+                        String.IsNullOrWhiteSpace(hop.Address) ? "—" : hop.Address,
+                        Localization.Get(language, hop.Responded ? "RouteTraceResponded" : "RouteTraceNoReply"));
+                    grid.Rows[row].Cells[5].Style.ForeColor = hop.Responded ? LiquidGlassTheme.Good : LiquidGlassTheme.Warning;
+                    if (!hop.Responded) grid.Rows[row].DefaultCellStyle.ForeColor = LiquidGlassTheme.MutedText;
+                }
+                grid.ClearSelection();
+                Label emptyState = new Label
+                {
+                    Dock = DockStyle.Fill,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    ForeColor = LiquidGlassTheme.SecondaryText,
+                    BackColor = LiquidGlassTheme.WindowRaised,
+                    Font = new Font("Segoe UI", 9.5F),
+                    Padding = new Padding(24),
+                    AutoEllipsis = true,
+                    Text = Localization.Get(language, "RouteTraceSummaryUnavailable") + Environment.NewLine + Environment.NewLine +
+                        Localization.Get(language, "RouteTraceRawDetails") + " " + (result ?? String.Empty).Trim().Replace("\r\n", " ").Replace("\n", " ")
+                };
+                grid.Visible = hops.Count > 0;
+                emptyState.Visible = hops.Count == 0;
+                resultsCard.Controls.Add(grid);
+                resultsCard.Controls.Add(emptyState);
+                layout.Controls.Add(resultsCard, 0, 3);
+
+                Panel footer = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+                Label localLabel = new Label
+                {
+                    Text = Localization.Get(language, "RouteTraceLocalFooter"),
+                    Location = new Point(8, 18),
+                    Size = new Size(590, 24),
+                    ForeColor = LiquidGlassTheme.MutedText,
+                    Font = new Font("Segoe UI", 8F),
+                    AutoEllipsis = true
+                };
+                GlassButton close = new GlassButton
+                {
+                    Text = Localization.Get(language, "RouteTraceClose"),
+                    Size = new Size(112, 38),
+                    Anchor = AnchorStyles.Top | AnchorStyles.Right,
+                    BackColor = LiquidGlassTheme.Sapphire,
+                    ForeColor = Color.FromArgb(9, 15, 24),
+                    Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold),
+                    Cursor = Cursors.Hand,
+                    DialogResult = DialogResult.OK
+                };
+                close.Location = new Point(Math.Max(8, footer.ClientSize.Width - close.Width - 6), 5);
+                footer.Resize += delegate
+                {
+                    close.Location = new Point(Math.Max(8, footer.ClientSize.Width - close.Width - 6), 5);
+                    localLabel.Width = Math.Max(80, close.Left - localLabel.Left - 14);
+                };
+                footer.Controls.Add(localLabel);
+                footer.Controls.Add(close);
+                layout.Controls.Add(footer, 0, 4);
+
                 dialog.AcceptButton = close;
-                LiquidGlassTheme.ApplyTree(dialog, close);
+                dialog.CancelButton = close;
                 GlassWindowEffects.Attach(dialog, true);
                 dialog.ShowDialog(this);
             }
@@ -3093,6 +3340,22 @@ namespace NetworkMonitorApp
                 RouteTrace.BuildArguments(true) == "/d /6 /h 8 /w 350 2606:4700:4700::1111" &&
                 RouteTrace.SelectIpv6Route(false, true) && !RouteTrace.SelectIpv6Route(true, true);
             results.Add((traceArgumentsSafe ? "PASS" : "FAIL") + " | bounded route trace arguments | " + (traceArgumentsSafe ? "fixed target; eight hops; 350 ms per probe" : "route trace options changed"));
+            string traceFixture = "Tracing route to 1.1.1.1 over a maximum of 8 hops\r\n  1    1 ms    2 ms    3 ms  192.168.1.1\r\n  2     *       *       *     Request timed out.\r\n  3    8 ms    9 ms   10 ms  1.1.1.1\r\nTrace complete.";
+            List<RouteTraceHop> parsedTrace = RouteTrace.ParseHops(traceFixture);
+            bool traceParser = parsedTrace.Count == 3 && parsedTrace[0].Responded && parsedTrace[0].Address == "192.168.1.1" &&
+                !parsedTrace[1].Responded && String.IsNullOrEmpty(parsedTrace[1].Address) && parsedTrace[2].Responded &&
+                RouteTrace.Summarize(parsedTrace, "1.1.1.1", AppLanguage.English) == Localization.Get(AppLanguage.English, "RouteTraceSummaryReached");
+            results.Add((traceParser ? "PASS" : "FAIL") + " | route trace hop parsing | " + (traceParser ? "latencies, addresses, and unanswered hops are separated" : "route trace rows were not parsed correctly"));
+            List<RouteTraceHop> partialTrace = RouteTrace.ParseHops("  1    2 ms    3 ms    4 ms  192.168.1.1\r\n  2     *       *       *     Request timed out.");
+            string partialTraceSummary = RouteTrace.Summarize(partialTrace, "1.1.1.1", AppLanguage.English);
+            bool partialTraceIsCautious = partialTrace.Count == 2 && partialTraceSummary.IndexOf("not reached", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                partialTraceSummary.IndexOf("outage", StringComparison.OrdinalIgnoreCase) < 0;
+            results.Add((partialTraceIsCautious ? "PASS" : "FAIL") + " | route trace partial result interpretation | " + (partialTraceIsCautious ? "timeouts are described without claiming an outage" : "partial trace was overinterpreted"));
+            List<RouteTraceHop> noReplyTrace = RouteTrace.ParseHops("  1     *       *       *     Request timed out.");
+            bool noReplyTraceIsCautious = noReplyTrace.Count == 1 &&
+                RouteTrace.Summarize(noReplyTrace, "1.1.1.1", AppLanguage.Romanian) == Localization.Get(AppLanguage.Romanian, "RouteTraceSummaryNoReplies") &&
+                RouteTrace.Summarize(new List<RouteTraceHop>(), "1.1.1.1", AppLanguage.English) == Localization.Get(AppLanguage.English, "RouteTraceSummaryUnavailable");
+            results.Add((noReplyTraceIsCautious ? "PASS" : "FAIL") + " | route trace no-response and empty states | " + (noReplyTraceIsCautious ? "both states are explained without a false outage diagnosis" : "route trace empty-state handling mismatch"));
             bool interfaceTypes = NetworkProbe.DescribeInterfaceType(NetworkInterfaceType.Wireless80211) == "Wi-Fi" &&
                 NetworkProbe.DescribeInterfaceType(NetworkInterfaceType.Ethernet) == "Ethernet" &&
                 NetworkProbe.DescribeInterfaceType(NetworkInterfaceType.Tunnel) == "Tunnel" &&
