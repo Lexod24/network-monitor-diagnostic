@@ -230,8 +230,18 @@ namespace NetworkMonitorApp
             int wifiDrops = samples.Count(delegate(Sample s) { return s.WifiState == "Disconnected"; });
             int weakSignal = samples.Count(delegate(Sample s) { return s.WifiSignalPercent.HasValue && s.WifiSignalPercent.Value < 35; });
             int gatewayFailed = samples.Count(delegate(Sample s) { return s.GatewayPingStatus != "Success" && s.GatewayPingStatus != "Unavailable" && s.GatewayPingStatus != "NoGateway"; });
-            int internetFailed = samples.Count(delegate(Sample s) { return s.InternetPingStatus != "Success"; });
-            int allExternalFailed = samples.Count(delegate(Sample s) { return s.InternetPingStatus != "Success" && s.HttpsStatus == "AllFailed"; });
+            int internetFailed = samples.Count(delegate(Sample s)
+            {
+                int successes = s.InternetTargetResults == null ? (s.InternetPingStatus == "Success" ? 1 : 0) : s.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; });
+                return successes == 0;
+            });
+            int allExternalFailed = samples.Count(delegate(Sample s)
+            {
+                int successes = s.InternetTargetResults == null ? (s.InternetPingStatus == "Success" ? 1 : 0) : s.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; });
+                return successes == 0 && s.HttpsStatus == "AllFailed";
+            });
+            int internetTargetSuccesses = samples.Sum(delegate(Sample s) { return s.InternetTargetResults == null ? (s.InternetPingStatus == "Success" ? 1 : 0) : s.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; }); });
+            int internetTargetAttempts = samples.Sum(delegate(Sample s) { return s.InternetTargetResults == null ? (s.InternetPingStatus == "Unavailable" || s.InternetPingStatus == "NotChecked" ? 0 : 1) : s.InternetTargetResults.Count; });
             int httpsOk = samples.Sum(delegate(Sample s) { return s.HttpsSucceeded.HasValue ? s.HttpsSucceeded.Value : 0; });
             int httpsTotal = samples.Sum(delegate(Sample s) { return s.HttpsAttempted.HasValue ? s.HttpsAttempted.Value : 0; });
             int dnsOk = samples.Sum(delegate(Sample s) { return s.DnsSucceeded.HasValue ? s.DnsSucceeded.Value : 0; });
@@ -252,6 +262,8 @@ namespace NetworkMonitorApp
             b.AppendLine("gateway_icmp_average_latency_ms=" + FormatAggregate(gateway));
             b.AppendLine("internet_icmp_nonresponses=" + internetFailed.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("samples_where_all_external_probes_failed=" + allExternalFailed.ToString(CultureInfo.InvariantCulture));
+            b.AppendLine("independent_internet_target_responses=" + internetTargetSuccesses.ToString(CultureInfo.InvariantCulture) + "/" + internetTargetAttempts.ToString(CultureInfo.InvariantCulture) + " (Cloudflare, Google, Quad9; fixed targets, no IPs included)");
+            b.AppendLine("active_route_interface_types=" + String.Join(";", samples.Where(delegate(Sample s) { return !String.IsNullOrEmpty(s.ActiveInterfaceType); }).GroupBy(delegate(Sample s) { return s.ActiveInterfaceType; }).Select(delegate(IGrouping<string, Sample> group) { return group.Key + ":" + group.Count().ToString(CultureInfo.InvariantCulture); }).ToArray()));
             b.AppendLine("https_successful_endpoint_checks=" + httpsOk.ToString(CultureInfo.InvariantCulture) + "/" + httpsTotal.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("dns_successful_name_lookups=" + dnsOk.ToString(CultureInfo.InvariantCulture) + "/" + dnsTotal.ToString(CultureInfo.InvariantCulture));
             b.AppendLine("internet_icmp_average_latency_ms=" + FormatAggregate(internet));
@@ -260,8 +272,8 @@ namespace NetworkMonitorApp
             AppendLatencyStatistics(b, "gateway", samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; }));
             AppendLatencyStatistics(b, "internet", samples.Select(delegate(Sample s) { return s.InternetLatencyMs; }));
             b.AppendLine(language == AppLanguage.Romanian
-                ? "Probele ICMP pot fi filtrate; DNS foloseste resolverul Windows. Acest sumar nu include SSID, adrese IP, timestampuri exacte sau continutul CSV."
-                : "ICMP probes may be filtered; DNS uses the Windows resolver. This summary excludes SSID, IP addresses, exact timestamps, and raw CSV content.");
+                ? "Probele ICMP pot fi filtrate; DNS foloseste resolverul Windows. Comparatia de trafic este doar observata, nu controlata. Acest sumar nu include SSID, adrese IP, timestampuri exacte sau continutul CSV."
+                : "ICMP probes may be filtered; DNS uses the Windows resolver. Traffic comparison is observational, not controlled. This summary excludes SSID, IP addresses, exact timestamps, and raw CSV content.");
             return b.ToString();
         }
 

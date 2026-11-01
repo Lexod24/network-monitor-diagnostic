@@ -8,6 +8,7 @@ using System.Linq;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -24,6 +25,19 @@ namespace NetworkMonitorApp
         public double? LatencyMs;
     }
 
+    internal sealed class InternetTargetObservation
+    {
+        public string Name;
+        public string Status;
+        public double? LatencyMs;
+    }
+
+    internal sealed class InternetTargetDefinition
+    {
+        public string Name;
+        public string Address;
+    }
+
     internal sealed class Sample
     {
         public DateTimeOffset Timestamp;
@@ -35,6 +49,11 @@ namespace NetworkMonitorApp
         public string InternetPingStatus;
         public double? InternetLatencyMs;
         public double? InternetLossPct;
+        public List<InternetTargetObservation> InternetTargetResults;
+        public int? InternetTargetSucceeded;
+        public int? InternetTargetAttempted;
+        public string ActiveInterfaceType;
+        public bool ActiveInterfaceChanged;
         public long? NetworkBytesReceived;
         public long? NetworkBytesSent;
         public double? DownloadMbps;
@@ -60,7 +79,14 @@ namespace NetworkMonitorApp
         private const int HttpsTimeoutMs = 3000;
         private const int DnsTimeoutMs = 2500;
         private const int LatencySpikeMs = 150;
-        private const string InternetPingAddress = "1.1.1.1";
+        [DllImport("iphlpapi.dll", ExactSpelling = true)]
+        private static extern int GetBestInterface(uint destinationAddress, out uint interfaceIndex);
+        private static readonly InternetTargetDefinition[] InternetPingTargets = new InternetTargetDefinition[]
+        {
+            new InternetTargetDefinition { Name = "Cloudflare", Address = "1.1.1.1" },
+            new InternetTargetDefinition { Name = "Google", Address = "8.8.8.8" },
+            new InternetTargetDefinition { Name = "Quad9", Address = "9.9.9.9" }
+        };
         private static readonly string[] DnsProbeHosts = new string[] { "www.microsoft.com", "www.google.com", "www.cloudflare.com" };
         private static readonly string[] HttpsProbeUrls = new string[]
         {
@@ -73,7 +99,8 @@ namespace NetworkMonitorApp
         {
             int? signal;
             string gateway;
-            string wifiState = GetNetworkSnapshot(out signal, out gateway);
+            string activeInterfaceType;
+            string wifiState = GetNetworkSnapshot(out signal, out gateway, out activeInterfaceType);
             long? bytesReceived;
             long? bytesSent;
             string interfaceId;
@@ -82,21 +109,32 @@ namespace NetworkMonitorApp
             double elapsedSeconds = lastSample == null ? 0 : (timestamp - lastSample.Timestamp).TotalSeconds;
             bool sameInterface = lastSample != null && !String.IsNullOrEmpty(interfaceId) && String.Equals(interfaceId, lastSample.NetworkInterfaceId, StringComparison.Ordinal);
             Task<ProbeResult> gatewayTask = gateway == null ? null : Task.Factory.StartNew(delegate { return PingTarget(gateway); });
-            Task<ProbeResult> internetTask = Task.Factory.StartNew(delegate { return PingTarget(InternetPingAddress); });
+            Task<ProbeResult>[] internetTasks = InternetPingTargets.Select(delegate(InternetTargetDefinition target)
+            {
+                return Task.Factory.StartNew(delegate { return PingTarget(target.Address); });
+            }).ToArray();
             Task<List<ProbeResult>> dnsTask = checkDns ? Task.Factory.StartNew(delegate { return ProbeDnsHosts(); }) : null;
             try
             {
-                Task[] pingTasks = gatewayTask == null ? new Task[] { internetTask } : new Task[] { gatewayTask, internetTask };
+                List<Task> pingTaskList = internetTasks.Cast<Task>().ToList();
+                if (gatewayTask != null) pingTaskList.Add(gatewayTask);
+                Task[] pingTasks = pingTaskList.ToArray();
                 Task.WaitAll(pingTasks, PingTimeoutMs + 250);
             }
             catch { }
             ProbeResult gatewayProbe = gateway == null ? new ProbeResult { Status = "NoGateway", LatencyMs = null }
                 : (gatewayTask.IsCompleted && !gatewayTask.IsFaulted ? gatewayTask.Result : new ProbeResult { Status = "Timeout", LatencyMs = PingTimeoutMs });
-            ProbeResult internetProbe = internetTask.IsCompleted && !internetTask.IsFaulted ? internetTask.Result
-                : new ProbeResult { Status = "Timeout", LatencyMs = PingTimeoutMs };
+            List<InternetTargetObservation> targetResults = new List<InternetTargetObservation>();
+            for (int i = 0; i < internetTasks.Length; i++)
+            {
+                ProbeResult result = internetTasks[i].IsCompleted && !internetTasks[i].IsFaulted
+                    ? internetTasks[i].Result : new ProbeResult { Status = "Timeout", LatencyMs = PingTimeoutMs };
+                targetResults.Add(new InternetTargetObservation { Name = InternetPingTargets[i].Name, Status = result.Status, LatencyMs = result.LatencyMs });
+            }
+            ProbeResult internetProbe = AggregateInternetTargets(targetResults);
 
             List<ProbeResult> httpsResults = new List<ProbeResult>();
-            if (internetProbe.Status != "Success")
+            if ((internetProbe.Status == "AllFailed" || internetProbe.Status == "Partial") && targetResults.Count(delegate(InternetTargetObservation result) { return result.Status == "Success"; }) < 2)
             {
                 Task<ProbeResult>[] requests = HttpsProbeUrls.Select(delegate(string url)
                 {
@@ -128,6 +166,11 @@ namespace NetworkMonitorApp
             sample.GatewayLatencyMs = gatewayProbe.LatencyMs;
             sample.InternetPingStatus = internetProbe.Status;
             sample.InternetLatencyMs = internetProbe.LatencyMs;
+            sample.InternetTargetResults = targetResults;
+            sample.InternetTargetSucceeded = targetResults.Count(delegate(InternetTargetObservation result) { return result.Status == "Success"; });
+            sample.InternetTargetAttempted = targetResults.Count;
+            sample.ActiveInterfaceType = activeInterfaceType;
+            sample.ActiveInterfaceChanged = lastSample != null && !String.IsNullOrEmpty(interfaceId) && !String.IsNullOrEmpty(lastSample.NetworkInterfaceId) && !String.Equals(interfaceId, lastSample.NetworkInterfaceId, StringComparison.Ordinal);
             sample.NetworkBytesReceived = bytesReceived;
             sample.NetworkBytesSent = bytesSent;
             sample.NetworkInterfaceId = interfaceId;
@@ -150,16 +193,10 @@ namespace NetworkMonitorApp
             List<Sample> window = previousSamples.Skip(Math.Max(0, previousSamples.Count - 11)).ToList();
             window.Add(sample);
             sample.GatewayLossPct = RollingLoss(window, delegate(Sample s) { return s.GatewayPingStatus; });
-            sample.InternetLossPct = RollingLoss(window, delegate(Sample s) { return s.InternetPingStatus; });
+            sample.InternetLossPct = RollingTargetLoss(window);
             sample.Events = String.Join(";", FindSampleEvents(sample));
 
-            bool internetReachable = internetProbe.Status == "Success" || https.Status == "Success";
-            if (!internetReachable)
-                sample.Connectivity = "OutageSuspected";
-            else if (sample.Events.Length > 0 && sample.Events != "ICMPUnavailableHTTPSOk")
-                sample.Connectivity = "Degraded";
-            else
-                sample.Connectivity = "OK";
+            sample.Connectivity = DetermineConnectivity(sample);
 
             return sample;
         }
@@ -170,6 +207,86 @@ namespace NetworkMonitorApp
             return (currentBytes.Value - previousBytes.Value) * 8.0 / elapsedSeconds / 1000000.0;
         }
 
+        internal static ProbeResult AggregateInternetTargets(IList<InternetTargetObservation> results)
+        {
+            if (results == null || results.Count == 0) return new ProbeResult { Status = "Unavailable", LatencyMs = null };
+            List<double> successfulLatencies = results.Where(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success" && result.LatencyMs.HasValue; })
+                .Select(delegate(InternetTargetObservation result) { return result.LatencyMs.Value; }).OrderBy(delegate(double value) { return value; }).ToList();
+            int successes = results.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; });
+            string status = successes == 0 ? "AllFailed" : (successes == results.Count ? "Success" : (successes >= 2 ? "Success" : "Partial"));
+            double? latency = null;
+            if (successfulLatencies.Count > 0)
+                latency = successfulLatencies.Count % 2 == 0
+                    ? (successfulLatencies[successfulLatencies.Count / 2 - 1] + successfulLatencies[successfulLatencies.Count / 2]) / 2.0
+                    : successfulLatencies[successfulLatencies.Count / 2];
+            return new ProbeResult { Status = status, LatencyMs = latency };
+        }
+
+        private static double? RollingTargetLoss(IList<Sample> samples)
+        {
+            int attempted = 0;
+            int failed = 0;
+            foreach (Sample sample in samples)
+            {
+                if (sample.InternetTargetResults != null && sample.InternetTargetResults.Count > 0)
+                {
+                    attempted += sample.InternetTargetResults.Count;
+                    failed += sample.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result == null || result.Status != "Success"; });
+                }
+                else if (sample.InternetPingStatus != "Unavailable" && sample.InternetPingStatus != "NoGateway" && sample.InternetPingStatus != "NotChecked")
+                {
+                    attempted++;
+                    if (sample.InternetPingStatus != "Success") failed++;
+                }
+            }
+            return attempted == 0 ? (double?)null : Math.Round(100.0 * failed / attempted, 1);
+        }
+
+        internal static string FormatInternetTargets(IList<InternetTargetObservation> results, AppLanguage language)
+        {
+            if (results == null || results.Count == 0) return Localization.Get(language, "Unavailable");
+            return String.Join("; ", results.Select(delegate(InternetTargetObservation result)
+            {
+                string state = result.Status == "Success" && result.LatencyMs.HasValue
+                    ? result.LatencyMs.Value.ToString("0", CultureInfo.InvariantCulture) + " ms"
+                    : Localization.Status(language, result.Status);
+                return result.Name + " " + state;
+            }).ToArray());
+        }
+
+        internal static string DetermineConnectivity(Sample sample)
+        {
+            int targetSuccesses = sample.InternetTargetResults == null
+                ? (sample.InternetPingStatus == "Success" ? 1 : 0)
+                : sample.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; });
+            bool internetReachable = targetSuccesses > 0 || sample.HttpsStatus == "Success";
+            if (!internetReachable) return "OutageSuspected";
+            bool actionableEvent = (sample.Events ?? "").Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(delegate(string code) { return code != "ICMPUnavailableHTTPSOk" && code != "InternetTargetDisagreement"; });
+            if (actionableEvent || (sample.InternetTargetResults != null && targetSuccesses == 1 && sample.HttpsStatus == "AllFailed")) return "Degraded";
+            return "OK";
+        }
+
+        internal static int? GetBestInterfaceIndex(string destination)
+        {
+            try
+            {
+                byte[] bytes = IPAddress.Parse(destination).GetAddressBytes();
+                if (bytes.Length != 4) return null;
+                uint index;
+                if (GetBestInterface(BitConverter.ToUInt32(bytes, 0), out index) != 0 || index == 0) return null;
+                return checked((int)index);
+            }
+            catch { return null; }
+        }
+
+        internal static string DescribeInterfaceType(NetworkInterfaceType type)
+        {
+            if (type == NetworkInterfaceType.Wireless80211) return "Wi-Fi";
+            if (type == NetworkInterfaceType.Ethernet || type == NetworkInterfaceType.GigabitEthernet) return "Ethernet";
+            return "Other";
+        }
+
         private static void GetTrafficCounters(string gateway, out long? bytesReceived, out long? bytesSent, out string interfaceId)
         {
             bytesReceived = null;
@@ -178,28 +295,42 @@ namespace NetworkMonitorApp
             if (String.IsNullOrEmpty(gateway)) return;
             try
             {
-                foreach (NetworkInterface ni in NetworkInterface.GetAllNetworkInterfaces())
+                NetworkInterface[] interfaces = NetworkInterface.GetAllNetworkInterfaces();
+                int? bestIndex = GetBestInterfaceIndex("1.1.1.1");
+                NetworkInterface selected = bestIndex.HasValue ? interfaces.FirstOrDefault(delegate(NetworkInterface ni)
                 {
-                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
-                    bool hasGateway = ni.GetIPProperties().GatewayAddresses.Any(delegate(GatewayIPAddressInformation address)
+                    try { return ni.OperationalStatus == OperationalStatus.Up && ni.GetIPProperties().GetIPv4Properties().Index == bestIndex.Value; }
+                    catch { return false; }
+                }) : null;
+                if (selected == null)
+                    selected = interfaces.FirstOrDefault(delegate(NetworkInterface ni)
                     {
-                        return address.Address.AddressFamily == AddressFamily.InterNetwork && String.Equals(address.Address.ToString(), gateway, StringComparison.Ordinal);
+                        if (ni.OperationalStatus != OperationalStatus.Up) return false;
+                        try
+                        {
+                            return ni.GetIPProperties().GatewayAddresses.Any(delegate(GatewayIPAddressInformation address)
+                            {
+                                return address.Address.AddressFamily == AddressFamily.InterNetwork && String.Equals(address.Address.ToString(), gateway, StringComparison.Ordinal);
+                            });
+                        }
+                        catch { return false; }
                     });
-                    if (!hasGateway) continue;
-                    IPv4InterfaceStatistics counters = ni.GetIPv4Statistics();
+                if (selected != null)
+                {
+                    IPv4InterfaceStatistics counters = selected.GetIPv4Statistics();
                     bytesReceived = counters.BytesReceived;
                     bytesSent = counters.BytesSent;
-                    interfaceId = ni.Id;
-                    return;
+                    interfaceId = selected.Id;
                 }
             }
             catch { bytesReceived = null; bytesSent = null; interfaceId = null; }
         }
 
-        private static string GetNetworkSnapshot(out int? signalPercent, out string gateway)
+        private static string GetNetworkSnapshot(out int? signalPercent, out string gateway, out string activeInterfaceType)
         {
             signalPercent = null;
             gateway = null;
+            activeInterfaceType = "Unavailable";
             NetworkInterface[] interfaces;
             try { interfaces = NetworkInterface.GetAllNetworkInterfaces(); }
             catch { return "Unavailable"; }
@@ -222,19 +353,31 @@ namespace NetworkMonitorApp
             else
                 state = "Disconnected";
 
-            if (wifiUp != null)
+            int? bestIndex = GetBestInterfaceIndex("1.1.1.1");
+            NetworkInterface activeInterface = bestIndex.HasValue ? interfaces.FirstOrDefault(delegate(NetworkInterface ni)
             {
-                gateway = GetIpv4Gateway(wifiUp);
-                signalPercent = GetWifiSignalPercent();
+                try { return ni.OperationalStatus == OperationalStatus.Up && ni.GetIPProperties().GetIPv4Properties().Index == bestIndex.Value; }
+                catch { return false; }
+            }) : null;
+            if (activeInterface == null) activeInterface = wifiUp;
+            if (activeInterface != null)
+            {
+                activeInterfaceType = DescribeInterfaceType(activeInterface.NetworkInterfaceType);
+                gateway = GetIpv4Gateway(activeInterface);
+                if (activeInterface.NetworkInterfaceType == NetworkInterfaceType.Wireless80211) signalPercent = GetWifiSignalPercent();
             }
 
-            if (gateway == null)
+            bool routeInterfaceKnown = bestIndex.HasValue && activeInterface != null;
+            if (gateway == null && !routeInterfaceKnown)
             {
-                foreach (NetworkInterface ni in interfaces)
+                NetworkInterface fallback = interfaces.FirstOrDefault(delegate(NetworkInterface ni)
                 {
-                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
-                    gateway = GetIpv4Gateway(ni);
-                    if (gateway != null) break;
+                    return ni.OperationalStatus == OperationalStatus.Up && GetIpv4Gateway(ni) != null;
+                });
+                if (fallback != null)
+                {
+                    gateway = GetIpv4Gateway(fallback);
+                    activeInterfaceType = DescribeInterfaceType(fallback.NetworkInterfaceType);
                 }
             }
             return state;
@@ -395,12 +538,16 @@ namespace NetworkMonitorApp
         private static List<string> FindSampleEvents(Sample sample)
         {
             List<string> events = new List<string>();
+            int targetSuccesses = sample.InternetTargetResults == null ? (sample.InternetPingStatus == "Success" ? 1 : 0) : sample.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; });
+            int targetAttempts = sample.InternetTargetResults == null ? (sample.InternetPingStatus == "Unavailable" || sample.InternetPingStatus == "NotChecked" ? 0 : 1) : sample.InternetTargetResults.Count;
             if (sample.WifiState == "Disconnected") events.Add("WiFiDisconnected");
             if (sample.WifiSignalPercent.HasValue && sample.WifiSignalPercent.Value < 35) events.Add("WeakWiFiSignal");
+            if (sample.ActiveInterfaceChanged) events.Add("ActiveRouteChanged");
             if (sample.GatewayPingStatus != "Success" && sample.GatewayPingStatus != "Unavailable" && sample.GatewayPingStatus != "NoGateway")
                 events.Add("GatewayUnreachable");
-            if (sample.InternetPingStatus != "Success" && sample.HttpsStatus == "Success") events.Add("ICMPUnavailableHTTPSOk");
-            if (sample.InternetPingStatus != "Success" && sample.HttpsStatus == "AllFailed") events.Add("InternetOutageSuspected");
+            if (targetAttempts > 1 && targetSuccesses > 0 && targetSuccesses < targetAttempts) events.Add("InternetTargetDisagreement");
+            if (targetSuccesses == 0 && sample.HttpsStatus == "Success") events.Add("ICMPUnavailableHTTPSOk");
+            if (targetSuccesses == 0 && sample.HttpsStatus == "AllFailed") events.Add("InternetOutageSuspected");
             if (sample.HttpsSucceeded.HasValue && sample.HttpsSucceeded.Value > 0 && sample.HttpsAttempted.HasValue && sample.HttpsSucceeded.Value < sample.HttpsAttempted.Value)
                 events.Add("HTTPSProbeDisagreement");
             if (sample.DnsStatus == "AllFailed") events.Add("DNSFailure");
@@ -411,6 +558,83 @@ namespace NetworkMonitorApp
             if (sample.HttpsStatus == "Success" && sample.HttpsLatencyMs.HasValue && sample.HttpsLatencyMs.Value >= LatencySpikeMs)
                 events.Add("HTTPSLatencySpike");
             return events;
+        }
+    }
+
+    internal static class RouteTrace
+    {
+        internal const string Target = "1.1.1.1";
+
+        internal static string BuildArguments()
+        {
+            return "/d /4 /h 8 /w 350 " + Target;
+        }
+
+        internal static string Run()
+        {
+            string executable = Path.Combine(Environment.SystemDirectory, "tracert.exe");
+            if (!File.Exists(executable)) return "Windows tracert.exe is not available.";
+            ProcessStartInfo info = new ProcessStartInfo(executable, BuildArguments());
+            info.UseShellExecute = false;
+            info.CreateNoWindow = true;
+            info.RedirectStandardOutput = true;
+            info.RedirectStandardError = true;
+            info.StandardOutputEncoding = Encoding.GetEncoding(CultureInfo.CurrentCulture.TextInfo.OEMCodePage);
+            info.StandardErrorEncoding = info.StandardOutputEncoding;
+            using (Process process = Process.Start(info))
+            {
+                if (!process.WaitForExit(12000))
+                {
+                    try { process.Kill(); } catch { }
+                    try { process.WaitForExit(1000); } catch { }
+                    return "The route trace exceeded its 12-second safety limit and was stopped. Some routers do not answer traceroute probes.";
+                }
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                if (String.IsNullOrWhiteSpace(output)) output = error;
+                return String.IsNullOrWhiteSpace(output) ? "No route trace output was returned." : output.Trim();
+            }
+        }
+    }
+
+    internal sealed class LoadLatencyComparison
+    {
+        public int QuietSamples;
+        public int ActiveSamples;
+        public double? QuietMedianMs;
+        public double? ActiveMedianMs;
+        public double? GatewayQuietMedianMs;
+        public double? GatewayActiveMedianMs;
+    }
+
+    internal static class LoadLatencyAnalysis
+    {
+        internal static LoadLatencyComparison Compare(IList<Sample> samples)
+        {
+            List<Sample> quiet = (samples ?? new List<Sample>()).Where(delegate(Sample s)
+            {
+                return s.InternetLatencyMs.HasValue && s.DownloadMbps.HasValue && s.UploadMbps.HasValue && s.DownloadMbps.Value < 0.25 && s.UploadMbps.Value < 0.25;
+            }).ToList();
+            List<Sample> active = (samples ?? new List<Sample>()).Where(delegate(Sample s)
+            {
+                return s.InternetLatencyMs.HasValue && s.DownloadMbps.HasValue && s.UploadMbps.HasValue && (s.DownloadMbps.Value >= 1.0 || s.UploadMbps.Value >= 1.0);
+            }).ToList();
+            return new LoadLatencyComparison
+            {
+                QuietSamples = quiet.Count,
+                ActiveSamples = active.Count,
+                QuietMedianMs = quiet.Count < 3 ? (double?)null : Median(quiet.Select(delegate(Sample s) { return s.InternetLatencyMs.Value; })),
+                ActiveMedianMs = active.Count < 3 ? (double?)null : Median(active.Select(delegate(Sample s) { return s.InternetLatencyMs.Value; })),
+                GatewayQuietMedianMs = quiet.Count(delegate(Sample s) { return s.GatewayLatencyMs.HasValue; }) < 3 ? (double?)null : Median(quiet.Where(delegate(Sample s) { return s.GatewayLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.GatewayLatencyMs.Value; })),
+                GatewayActiveMedianMs = active.Count(delegate(Sample s) { return s.GatewayLatencyMs.HasValue; }) < 3 ? (double?)null : Median(active.Where(delegate(Sample s) { return s.GatewayLatencyMs.HasValue; }).Select(delegate(Sample s) { return s.GatewayLatencyMs.Value; }))
+            };
+        }
+
+        private static double Median(IEnumerable<double> values)
+        {
+            List<double> ordered = values.OrderBy(delegate(double value) { return value; }).ToList();
+            if (ordered.Count == 0) return 0;
+            return ordered.Count % 2 == 0 ? (ordered[ordered.Count / 2 - 1] + ordered[ordered.Count / 2]) / 2.0 : ordered[ordered.Count / 2];
         }
     }
 
@@ -529,7 +753,7 @@ namespace NetworkMonitorApp
             int dnsDisagreements = samples.Count(delegate(Sample s) { return s.DnsSucceeded.HasValue && s.DnsAttempted.HasValue && s.DnsSucceeded.Value > 0 && s.DnsSucceeded.Value < s.DnsAttempted.Value; });
             int gatewayFailures = samples.Count(delegate(Sample s) { return s.GatewayPingStatus != "Success" && s.GatewayPingStatus != "Unavailable" && s.GatewayPingStatus != "NoGateway"; });
             int gatewayAttempts = samples.Count(delegate(Sample s) { return s.GatewayPingStatus != "Unavailable" && s.GatewayPingStatus != "NoGateway"; });
-            int outages = samples.Count(delegate(Sample s) { return s.InternetPingStatus != "Success" && s.HttpsStatus == "AllFailed"; });
+            int outages = samples.Count(delegate(Sample s) { return ExternalSuccesses(s) == 0 && s.HttpsStatus == "AllFailed"; });
             int httpsSuccess = samples.Sum(delegate(Sample s) { return s.HttpsSucceeded.HasValue ? s.HttpsSucceeded.Value : 0; });
             int httpsAttempts = samples.Sum(delegate(Sample s) { return s.HttpsAttempted.HasValue ? s.HttpsAttempted.Value : 0; });
             double? signal = Average(samples.Where(delegate(Sample s) { return s.WifiSignalPercent.HasValue; }).Select(delegate(Sample s) { return (double)s.WifiSignalPercent.Value; }));
@@ -539,12 +763,16 @@ namespace NetworkMonitorApp
             double? upload = Average(samples.Where(delegate(Sample s) { return s.UploadMbps.HasValue; }).Select(delegate(Sample s) { return s.UploadMbps.Value; }));
             StringBuilder b = new StringBuilder();
             b.AppendLine("NETWORK SESSION DIAGNOSIS - measured locally; transparent rules");
+            b.AppendLine("Likely affected segment: " + AssessLikelySegment(samples, AppLanguage.English));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Period: {0} to {1}", samples[0].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz"), samples[samples.Count - 1].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz")));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Samples: {0}; nominal interval: 5 seconds", samples.Count));
             b.AppendLine("Measured average sample gap: " + Format(AverageIntervalSeconds(samples), " seconds"));
             b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Measured averages: Wi-Fi signal {0}; gateway {1}; Internet ICMP {2}.", Format(signal, "%"), Format(gateway, " ms"), Format(internet, " ms")));
+            b.AppendLine("Active Windows route interface: " + FormatInterfaceStats(samples, AppLanguage.English) + ". Its interface index is used only in memory.");
+            b.AppendLine("Internet targets: " + FormatInternetTargetStats(samples) + ". These independent public IP probes are logged by service name; target IPs are not stored.");
             b.AppendLine("Passive traffic on the active gateway interface: average download " + Format(download, " Mbps") + "; upload " + Format(upload, " Mbps") + ". This is current device traffic, not the connection's maximum speed.");
             b.AppendLine("Successful ICMP latency statistics: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; })) + "; Internet " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; })) + ". Jitter is mean absolute change between consecutive successful samples.");
+            b.AppendLine(FormatLoadComparison(samples, AppLanguage.English));
             b.AppendLine(); b.AppendLine("FINDINGS AND INTERPRETATION");
             int findings = 0;
             if (wifiDrops > 0) { b.AppendLine(String.Format(CultureInfo.InvariantCulture, "- Wi-Fi disconnected in {0} sample(s). Windows reported the wireless interface as disconnected. This confirms a disconnect during the capture, but not its physical cause.", wifiDrops)); findings++; }
@@ -553,7 +781,7 @@ namespace NetworkMonitorApp
             if (dnsFailures > 0) { b.AppendLine(String.Format(CultureInfo.InvariantCulture, "- All three test names failed to resolve in {0} DNS check(s). If IP connectivity worked at the same time, DNS becomes a stronger suspect. Windows' resolver is used, once per minute.", dnsFailures)); findings++; }
             if (dnsDisagreements > 0) { b.AppendLine(String.Format(CultureInfo.InvariantCulture, "- DNS results differed across Microsoft, Google, and Cloudflare domains in {0} check(s). This may be a domain-specific issue; it does not confirm a general DNS failure.", dnsDisagreements)); findings++; }
             if (outages > 0) { b.AppendLine(String.Format(CultureInfo.InvariantCulture, "- Internet interruption suspected in {0} sample(s): ICMP and all three independent HTTPS endpoints failed together. This is evidence of broad reachability trouble during those samples, not proof of an ISP fault; firewall, proxy, or filtering may also block probes.", outages)); findings++; }
-            int icmpOnly = samples.Count(delegate(Sample s) { return s.InternetPingStatus != "Success" && s.HttpsStatus == "Success"; });
+            int icmpOnly = samples.Count(delegate(Sample s) { return ExternalSuccesses(s) == 0 && s.HttpsStatus == "Success"; });
             if (icmpOnly > 0) { b.AppendLine(String.Format(CultureInfo.InvariantCulture, "- ICMP did not reply in {0} sample(s), while at least one HTTPS endpoint did. Internet access was still available on that path; ping may be filtered.", icmpOnly)); findings++; }
             if (findings == 0) b.AppendLine("- No interruption or threshold-level anomaly was detected in the captured period. This cannot rule out problems outside the session.");
             b.AppendLine(); b.AppendLine("WHAT TO DO NEXT");
@@ -562,7 +790,7 @@ namespace NetworkMonitorApp
             if (dnsFailures > 0) b.AppendLine("- If websites fail by name while other Internet checks work, retry DNS and compare another device before changing DNS settings.");
             if (findings == 0) b.AppendLine("- If the problem returns, run the monitor during the issue and keep the generated CSV for comparison.");
             b.AppendLine();
-            b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Independent HTTPS checks: {0}/{1} successful. Microsoft, Google, and Cloudflare are checked only when the Internet ping does not reply.", httpsSuccess, httpsAttempts));
+            b.AppendLine(String.Format(CultureInfo.InvariantCulture, "Independent HTTPS checks: {0}/{1} successful. Microsoft, Google, and Cloudflare are checked when fewer than two external IP targets reply.", httpsSuccess, httpsAttempts));
             b.AppendLine("HTTPS by endpoint: " + FormatEndpointStats(samples, true));
             b.AppendLine("DNS by domain: " + FormatEndpointStats(samples, false));
             b.AppendLine("Limits: ICMP may be filtered; Windows may not expose Wi-Fi signal; a firewall or proxy may block multiple endpoints. The evidence narrows the likely area but cannot by itself prove hardware failure or ISP responsibility.");
@@ -589,11 +817,11 @@ namespace NetworkMonitorApp
             });
             int internetOutages = samples.Count(delegate(Sample s)
             {
-                return s.InternetPingStatus != "Success" && s.HttpsStatus == "AllFailed";
+                return ExternalSuccesses(s) == 0 && s.HttpsStatus == "AllFailed";
             });
             int httpsOnly = samples.Count(delegate(Sample s)
             {
-                return s.InternetPingStatus != "Success" && s.HttpsStatus == "Success";
+                return ExternalSuccesses(s) == 0 && s.HttpsStatus == "Success";
             });
             int gatewaySpikes = samples.Count(delegate(Sample s) { return s.GatewayLatencyMs.HasValue && s.GatewayLatencyMs.Value >= 150; });
             int internetSpikes = samples.Count(delegate(Sample s) { return s.InternetLatencyMs.HasValue && s.InternetLatencyMs.Value >= 150; });
@@ -663,24 +891,127 @@ namespace NetworkMonitorApp
 
             StringBuilder report = new StringBuilder();
             report.AppendLine("DIAGNOSTIC LOCAL - bazat pe reguli transparente; sumarul poate primi explicatie AI separat");
+            report.AppendLine("Segment probabil afectat: " + AssessLikelySegment(samples, AppLanguage.Romanian));
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Interval: {0} - {1}",
                 samples[0].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture),
                 samples[samples.Count - 1].Timestamp.ToString("yyyy-MM-dd HH:mm:ss zzz", CultureInfo.InvariantCulture)));
             report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Esantioane: {0}; frecventa nominala: 5 secunde", samples.Count));
             report.AppendLine("Interval mediu masurat intre esantioane: " + Format(AverageIntervalSeconds(samples), " secunde"));
             report.AppendLine("Medii observate: semnal Wi-Fi {0}; gateway {1}; Internet {2}.".Replace("{0}", Format(averageSignal, "%")).Replace("{1}", Format(averageGateway, " ms")).Replace("{2}", Format(averageInternet, " ms")));
+            report.AppendLine("Interfata Windows folosita pentru ruta: " + FormatInterfaceStats(samples, AppLanguage.Romanian) + ". Indexul interfetei este folosit doar temporar.");
+            report.AppendLine("Tinte IP independente: " + FormatInternetTargetStats(samples) + ". Adresele IP ale tintelor nu sunt scrise in jurnal.");
             report.AppendLine("Trafic pasiv pe interfata activa: descarcare medie " + Format(averageDownload, " Mbps") + "; incarcare " + Format(averageUpload, " Mbps") + ". Este traficul curent al calculatorului, nu viteza maxima a abonamentului.");
             report.AppendLine("Statistici latență ICMP cu raspuns: gateway " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.GatewayLatencyMs; })) + "; Internet " + FormatLatencyStatistics(samples.Select(delegate(Sample s) { return s.InternetLatencyMs; })) + ". Jitter = media variatiei absolute intre esantioanele reusite consecutive.");
+            report.AppendLine(FormatLoadComparison(samples, AppLanguage.Romanian));
             report.AppendLine();
             report.AppendLine("CONSTATARE SI INTERPRETARE");
             for (int i = 0; i < findings.Count; i++)
                 report.AppendLine("- " + findings[i]);
             report.AppendLine();
-            report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Verificari HTTPS independente: {0}/{1} reusite. Destinatii: Microsoft, Google si Cloudflare; acestea se testeaza numai cand proba ICMP catre Internet nu raspunde.", httpsSuccesses, httpsAttempts));
+            report.AppendLine(String.Format(CultureInfo.InvariantCulture, "Verificari HTTPS independente: {0}/{1} reusite. Destinatii: Microsoft, Google si Cloudflare; acestea se testeaza cand raspund mai putin de doua tinte IP.", httpsSuccesses, httpsAttempts));
             report.AppendLine("Rezultate HTTPS pe endpoint: " + FormatEndpointStats(samples, true));
             report.AppendLine("Rezultate DNS pe domeniu: " + FormatEndpointStats(samples, false));
             report.AppendLine("Limite: ping-ul poate fi filtrat; semnalul poate lipsi daca Windows nu-l expune; firewall-urile/proxy-urile pot bloca mai multe endpointuri. Comparatia reduce ambiguitatea, dar nu dovedeste singura defecte hardware sau vina furnizorului.");
             return report.ToString();
+        }
+
+        internal static string AssessLikelySegment(IList<Sample> samples, AppLanguage language)
+        {
+            bool ro = language == AppLanguage.Romanian;
+            if (samples == null || samples.Count == 0) return ro ? "Date insuficiente pentru localizare." : "Insufficient data to localize the issue.";
+            int wifiDrops = samples.Count(delegate(Sample sample) { return sample.WifiState == "Disconnected"; });
+            int routeChanges = samples.Count(delegate(Sample sample) { return sample.ActiveInterfaceChanged; });
+            int weakSignal = samples.Count(delegate(Sample sample) { return sample.WifiSignalPercent.HasValue && sample.WifiSignalPercent.Value < 35; });
+            int gatewayLossWithExternalFailure = samples.Count(delegate(Sample sample)
+            {
+                return IsGatewayFailure(sample) && ExternalSuccesses(sample) == 0 && sample.HttpsStatus != "Success";
+            });
+            int externalOutage = samples.Count(delegate(Sample sample) { return ExternalSuccesses(sample) == 0 && sample.HttpsStatus == "AllFailed"; });
+            int dnsFailureWithInternet = samples.Count(delegate(Sample sample)
+            {
+                return (sample.DnsStatus == "AllFailed" || sample.DnsStatus == "Failed" || sample.DnsStatus == "Timeout") &&
+                    (ExternalSuccesses(sample) > 0 || sample.HttpsStatus == "Success");
+            });
+            int destinationDisagreement = samples.Count(delegate(Sample sample)
+            {
+                int succeeded = ExternalSuccesses(sample);
+                int attempted = ExternalAttempts(sample);
+                return attempted > 1 && succeeded > 0 && succeeded < attempted;
+            });
+            int gatewayAttempts = samples.Count(IsGatewayAttempt);
+            int gatewayFailures = samples.Count(IsGatewayFailure);
+            int upstreamLatencyOnly = samples.Count(delegate(Sample sample)
+            {
+                return sample.InternetLatencyMs.HasValue && sample.InternetLatencyMs.Value >= 150 &&
+                    (!sample.GatewayLatencyMs.HasValue || sample.GatewayLatencyMs.Value < 150);
+            });
+
+            if (wifiDrops >= 2)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Wi-Fi: Windows a raportat deconectarea in {0} esantioane. Incredere ridicata doar pentru deconectarea observata; cauza ei nu este stabilita.", wifiDrops)
+                    : String.Format(CultureInfo.InvariantCulture, "Wi-Fi: Windows reported a disconnect in {0} samples. High confidence only that the disconnect was observed; its cause is not established.", wifiDrops);
+            if (routeChanges > 0)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Ruta Windows a trecut pe alta interfata in {0} esantion(e). Verifica daca schimbarea coincide cu problema; nu identifica singura cauza. Incredere scazuta spre medie.", routeChanges)
+                    : String.Format(CultureInfo.InvariantCulture, "Windows switched the active route interface in {0} sample(s). Check whether the switch coincides with the issue; it does not identify the cause by itself. Low-to-medium confidence.", routeChanges);
+            if (gatewayLossWithExternalFailure >= 2)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Legatura locala pana la gateway/router: gateway-ul si toate probele externe au esuat impreuna in {0} esantioane. Incredere medie; routerul poate filtra ICMP.", gatewayLossWithExternalFailure)
+                    : String.Format(CultureInfo.InvariantCulture, "Local link to gateway/router: gateway and all external checks failed together in {0} samples. Medium confidence; routers may filter ICMP.", gatewayLossWithExternalFailure);
+            if (dnsFailureWithInternet >= 1)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "DNS: internetul a raspuns, dar rezolvarea numelor a esuat in {0} verificari. Incredere medie spre ridicata pentru o problema DNS in acele momente; verificarea foloseste resolverul configurat in Windows.", dnsFailureWithInternet)
+                    : String.Format(CultureInfo.InvariantCulture, "DNS: Internet checks succeeded while name resolution failed in {0} checks. Medium-to-high confidence of a DNS issue at those times; the test uses the resolver configured in Windows.", dnsFailureWithInternet);
+            if (externalOutage >= 2 && gatewayAttempts > 0 && gatewayFailures < gatewayAttempts / 2)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Dupa gateway: gateway-ul a raspuns, dar toate tintele IP si verificarile HTTPS au esuat impreuna in {0} esantioane. Incredere medie; filtrarea, proxy-ul sau o ruta externa pot produce acelasi rezultat.", externalOutage)
+                    : String.Format(CultureInfo.InvariantCulture, "Beyond the gateway: the gateway replied, but all IP targets and HTTPS checks failed together in {0} samples. Medium confidence; filtering, a proxy, or an external route can produce the same result.", externalOutage);
+            if (destinationDisagreement >= 2)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Unele destinatii externe: raspunsurile tintelor au diferit in {0} esantioane, in timp ce cel putin o tinta a raspuns. Incredere scazuta; filtrarea ICMP sau trasee diferite pot explica diferenta.", destinationDisagreement)
+                    : String.Format(CultureInfo.InvariantCulture, "Some external destinations: target responses differed in {0} samples while at least one target replied. Low confidence; ICMP filtering or different routes can explain the difference.", destinationDisagreement);
+            if (upstreamLatencyOnly >= 2)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Traseul dincolo de gateway: latența catre mai multe tinte a crescut fara crestere similara catre gateway in {0} esantioane. Incredere medie; nu identifica furnizorul sau serverul responsabil.", upstreamLatencyOnly)
+                    : String.Format(CultureInfo.InvariantCulture, "Path beyond the gateway: latency to external targets rose without a similar gateway increase in {0} samples. Medium confidence; this does not identify the responsible ISP or server.", upstreamLatencyOnly);
+            if (weakSignal >= 3)
+                return ro ? String.Format(CultureInfo.InvariantCulture, "Legatura Wi-Fi merita verificata: semnal sub 35%% in {0} esantioane. Incredere scazuta spre medie; procentul nu masoara interferentele.", weakSignal)
+                    : String.Format(CultureInfo.InvariantCulture, "The Wi-Fi link merits checking: signal was below 35%% in {0} samples. Low-to-medium confidence; this percentage does not measure interference.", weakSignal);
+            if (samples.Count < 6)
+                return ro ? "Date insuficiente: sunt necesare mai multe esantioane pentru a localiza o problema intermitenta." : "Insufficient data: more samples are needed to localize an intermittent issue.";
+            return ro ? "Nu s-a localizat o degradare sustinuta in probele disponibile. Asta nu exclude o problema care a aparut in afara sesiunii." : "No sustained degradation was localized in the available checks. This does not rule out a problem outside the session.";
+        }
+
+        private static bool IsGatewayAttempt(Sample sample)
+        {
+            return sample.GatewayPingStatus != "Unavailable" && sample.GatewayPingStatus != "NoGateway" && sample.GatewayPingStatus != "NotChecked";
+        }
+
+        private static bool IsGatewayFailure(Sample sample)
+        {
+            return IsGatewayAttempt(sample) && sample.GatewayPingStatus != "Success";
+        }
+
+        private static int ExternalSuccesses(Sample sample)
+        {
+            if (sample.InternetTargetResults != null && sample.InternetTargetResults.Count > 0)
+                return sample.InternetTargetResults.Count(delegate(InternetTargetObservation result) { return result != null && result.Status == "Success"; });
+            return sample.InternetPingStatus == "Success" ? 1 : 0;
+        }
+
+        private static int ExternalAttempts(Sample sample)
+        {
+            return sample.InternetTargetResults != null && sample.InternetTargetResults.Count > 0 ? sample.InternetTargetResults.Count :
+                (sample.InternetPingStatus == "Unavailable" || sample.InternetPingStatus == "NotChecked" ? 0 : 1);
+        }
+
+        private static string FormatLoadComparison(IList<Sample> samples, AppLanguage language)
+        {
+            LoadLatencyComparison comparison = LoadLatencyAnalysis.Compare(samples);
+            bool ro = language == AppLanguage.Romanian;
+            if (!comparison.QuietMedianMs.HasValue || !comparison.ActiveMedianMs.HasValue)
+                return ro ? "Comparatie sub activitate de retea: nu sunt suficiente esantioane in perioade linistite si active. Aplicatia nu genereaza trafic; pentru comparatie, las-o pornita in timp ce folosesti normal conexiunea."
+                    : "Latency during network activity: not enough samples from both quiet and active periods. The app generates no traffic; leave it running while using the connection normally to compare periods.";
+            double delta = comparison.ActiveMedianMs.Value - comparison.QuietMedianMs.Value;
+            string localComparison = comparison.GatewayQuietMedianMs.HasValue && comparison.GatewayActiveMedianMs.HasValue
+                ? String.Format(CultureInfo.InvariantCulture, (ro ? " Gateway median: {0:0.0} ms linistit, {1:0.0} ms activ." : " Gateway median: {0:0.0} ms quiet, {1:0.0} ms active."), comparison.GatewayQuietMedianMs.Value, comparison.GatewayActiveMedianMs.Value)
+                : "";
+            return ro
+                ? String.Format(CultureInfo.InvariantCulture, "Comparatie observata (nu test controlat): mediana Internet a fost {0:0.0} ms linistit ({1} probe) si {2:0.0} ms cand traficul acestui PC a depasit 1 Mbps ({3} probe), diferenta {4:+0.0;-0.0;0.0} ms.{5} Corelatia nu dovedeste bufferbloat si nu include traficul altor dispozitive.", comparison.QuietMedianMs.Value, comparison.QuietSamples, comparison.ActiveMedianMs.Value, comparison.ActiveSamples, delta, localComparison)
+                : String.Format(CultureInfo.InvariantCulture, "Observed comparison (not a controlled test): Internet median was {0:0.0} ms during quiet periods ({1} samples) and {2:0.0} ms while this PC exceeded 1 Mbps traffic ({3} samples), a {4:+0.0;-0.0;0.0} ms difference.{5} Correlation does not prove bufferbloat and excludes traffic from other devices.", comparison.QuietMedianMs.Value, comparison.QuietSamples, comparison.ActiveMedianMs.Value, comparison.ActiveSamples, delta, localComparison);
         }
 
         private static double? Average(IEnumerable<double> values)
@@ -697,6 +1028,45 @@ namespace NetworkMonitorApp
             return String.Format(CultureInfo.InvariantCulture, "min {0:0.0}, median {1:0.0}, p95 {2:0.0}, max {3:0.0} ms, jitter {4}",
                 stats.Minimum.Value, stats.Median.Value, stats.P95.Value, stats.Maximum.Value,
                 stats.Jitter.HasValue ? stats.Jitter.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : "n/a");
+        }
+
+        private static string FormatInterfaceStats(IList<Sample> samples, AppLanguage language)
+        {
+            string[] types = new string[] { "Wi-Fi", "Ethernet", "Other", "Unavailable" };
+            return String.Join(", ", types.Select(delegate(string type)
+            {
+                int count = samples.Count(delegate(Sample sample) { return String.Equals(sample.ActiveInterfaceType ?? "Unavailable", type, StringComparison.OrdinalIgnoreCase); });
+                return type + " " + count.ToString(CultureInfo.InvariantCulture);
+            }).ToArray());
+        }
+
+        private static string FormatInternetTargetStats(IList<Sample> samples)
+        {
+            string[] names = new string[] { "Cloudflare", "Google", "Quad9" };
+            List<string> formatted = new List<string>();
+            foreach (string name in names)
+            {
+                int attempted = 0;
+                int succeeded = 0;
+                List<double?> latency = new List<double?>();
+                foreach (Sample sample in samples)
+                {
+                    if (sample.InternetTargetResults == null) continue;
+                    foreach (InternetTargetObservation result in sample.InternetTargetResults.Where(delegate(InternetTargetObservation item) { return item != null && item.Name == name; }))
+                    {
+                        attempted++;
+                        if (result.Status == "Success")
+                        {
+                            succeeded++;
+                            latency.Add(result.LatencyMs);
+                        }
+                    }
+                }
+                LatencyStatistics stats = LatencyStatistics.Calculate(latency);
+                formatted.Add(name + " " + succeeded.ToString(CultureInfo.InvariantCulture) + "/" + attempted.ToString(CultureInfo.InvariantCulture) +
+                    (stats.Median.HasValue ? ", median " + stats.Median.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : ""));
+            }
+            return String.Join("; ", formatted.ToArray());
         }
 
         private static string FormatEndpointStats(IList<Sample> samples, bool https)
@@ -746,7 +1116,7 @@ namespace NetworkMonitorApp
     {
         private const long MaxBytes = 10L * 1024L * 1024L;
         private const int RetainedRotatedFiles = 10;
-        private const string CsvHeader = "TimestampLocal,WifiState,WifiSignalPercent,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps";
+        private const string CsvHeader = "TimestampLocal,WifiState,WifiSignalPercent,ActiveInterfaceType,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,InternetTargets,InternetTargetsSucceeded,InternetTargetsAttempted,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps";
         private static readonly object Gate = new object();
         public static readonly string LogDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NetworkMonitor", "Logs");
@@ -767,12 +1137,16 @@ namespace NetworkMonitorApp
                     sample.Timestamp.ToString("yyyy-MM-dd HH:mm:ss.fff zzz", CultureInfo.InvariantCulture),
                     sample.WifiState,
                     sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) : "",
+                    sample.ActiveInterfaceType,
                     sample.GatewayPingStatus,
                     Number(sample.GatewayLatencyMs),
                     Number(sample.GatewayLossPct),
                     sample.InternetPingStatus,
                     Number(sample.InternetLatencyMs),
                     Number(sample.InternetLossPct),
+                    NetworkProbe.FormatInternetTargets(sample.InternetTargetResults, AppLanguage.English),
+                    sample.InternetTargetSucceeded.HasValue ? sample.InternetTargetSucceeded.Value.ToString(CultureInfo.InvariantCulture) : "",
+                    sample.InternetTargetAttempted.HasValue ? sample.InternetTargetAttempted.Value.ToString(CultureInfo.InvariantCulture) : "",
                     sample.HttpsStatus,
                     Number(sample.HttpsLatencyMs),
                     sample.HttpsEndpointResults,
@@ -856,6 +1230,7 @@ namespace NetworkMonitorApp
         private readonly Button startStopButton;
         private readonly Button openLogsButton;
         private readonly Button copyReportButton;
+        private readonly Button routeTraceButton;
         private readonly Button aiButton;
         private readonly Button disconnectAiButton;
         private readonly Button aiSettingsButton;
@@ -987,6 +1362,14 @@ namespace NetworkMonitorApp
             copyReportButton.Click += CopyReportClicked;
             header.Controls.Add(copyReportButton);
 
+            routeTraceButton = new Button();
+            routeTraceButton.Text = Localization.Get(language, "RouteTraceButton");
+            routeTraceButton.Size = new Size(160, 32);
+            routeTraceButton.Location = new Point(460, 14);
+            routeTraceButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+            routeTraceButton.Click += RouteTraceClicked;
+            header.Controls.Add(routeTraceButton);
+
             FlowLayoutPanel metrics = new FlowLayoutPanel();
             metrics.Location = new Point(20, 100);
             metrics.Size = new Size(1000, 24);
@@ -1026,11 +1409,12 @@ namespace NetworkMonitorApp
             grid.Columns.Add("signal", Localization.Get(language, "GridSignal"));
             grid.Columns.Add("gateway", "Gateway");
             grid.Columns.Add("internet", "Internet");
+            grid.Columns.Add("targets", Localization.Get(language, "GridTargets"));
             grid.Columns.Add("dns", "DNS");
             grid.Columns.Add("state", Localization.Get(language, "State"));
             grid.Columns.Add("events", Localization.Get(language, "Events"));
             grid.Columns[0].FillWeight = 125;
-            grid.Columns[7].FillWeight = 180;
+            grid.Columns[8].FillWeight = 180;
             split.Panel1.Controls.Add(grid);
 
             latencyChart = new LatencyChartPanel();
@@ -1080,6 +1464,7 @@ namespace NetworkMonitorApp
             startStopButton.Text = Localization.Get(language, monitoring ? "Stop" : (samples.Count > 0 ? "Restart" : "Start"));
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
             copyReportButton.Text = Localization.Get(language, "CopyReport");
+            routeTraceButton.Text = Localization.Get(language, "RouteTraceButton");
             aiButton.Text = Localization.Get(language, "ContinueChatGPT");
             aiSettingsButton.Text = Localization.Get(language, "AISettings");
             disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
@@ -1100,9 +1485,10 @@ namespace NetworkMonitorApp
             grid.Columns[2].HeaderText = Localization.Get(language, "GridSignal");
             grid.Columns[3].HeaderText = Localization.Get(language, "GridGateway");
             grid.Columns[4].HeaderText = Localization.Get(language, "GridInternet");
-            grid.Columns[5].HeaderText = Localization.Get(language, "GridDNS");
-            grid.Columns[6].HeaderText = Localization.Get(language, "State");
-            grid.Columns[7].HeaderText = Localization.Get(language, "Events");
+            grid.Columns[5].HeaderText = Localization.Get(language, "GridTargets");
+            grid.Columns[6].HeaderText = Localization.Get(language, "GridDNS");
+            grid.Columns[7].HeaderText = Localization.Get(language, "State");
+            grid.Columns[8].HeaderText = Localization.Get(language, "Events");
             if (samples.Count == 0) diagnosisBox.Text = Localization.Get(language, "InitialDiagnosis") + Environment.NewLine + Localization.Get(language, "AIDataNotice");
             else if (!monitoring)
             {
@@ -1310,18 +1696,18 @@ namespace NetworkMonitorApp
             wifiLabel.Text = Localization.Get(language, "MetricWifi") + ": " + Localization.Status(language, sample.WifiState);
             signalLabel.Text = Localization.Get(language, "MetricSignal") + ": " + (sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) + "%" : Localization.Get(language, "NoValue"));
             gatewayLabel.Text = Localization.Get(language, "MetricGateway") + ": " + FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
-            internetLabel.Text = Localization.Get(language, "MetricInternet") + ": " + FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
+            internetLabel.Text = Localization.Get(language, "MetricInternet") + ": " + FormatInternetProbe(sample, language);
             dnsLabel.Text = Localization.Get(language, "MetricDns") + ": " + Localization.Status(language, sample.DnsStatus);
             downloadLabel.Text = Localization.Get(language, "MetricDownload") + ": " + (sample.DownloadMbps.HasValue ? Format(sample.DownloadMbps) + " Mbps" : Localization.Get(language, "NoValue"));
             uploadLabel.Text = Localization.Get(language, "MetricUpload") + ": " + (sample.UploadMbps.HasValue ? Format(sample.UploadMbps) + " Mbps" : Localization.Get(language, "NoValue"));
             statusLabel.Text = Localization.Get(language, "Running") + " - " + (language == AppLanguage.Romanian ? "ultima proba " : "latest probe ") + sample.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture);
 
             string gateway = FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
-            string internet = FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
+            string internet = FormatInternetProbe(sample, language);
             string signal = sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) + "%" : Localization.Get(language, "NoValue");
             grid.Rows.Insert(0, sample.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture), Localization.Status(language, sample.WifiState), signal,
                 gateway + " / loss " + Format(sample.GatewayLossPct) + "%", internet + " / loss " + Format(sample.InternetLossPct) + "%",
-                Localization.Status(language, sample.DnsStatus), Localization.Status(language, sample.Connectivity), String.Join("; ", sample.Events.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(delegate(string code) { return Localization.Event(language, code); }).ToArray()));
+                NetworkProbe.FormatInternetTargets(sample.InternetTargetResults, language), Localization.Status(language, sample.DnsStatus), Localization.Status(language, sample.Connectivity), String.Join("; ", sample.Events.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(delegate(string code) { return Localization.Event(language, code); }).ToArray()));
             if (grid.Rows.Count > 1000) grid.Rows.RemoveAt(grid.Rows.Count - 1);
             List<Sample> chartSamples;
             lock (samplesGate) chartSamples = new List<Sample>(samples);
@@ -1333,6 +1719,14 @@ namespace NetworkMonitorApp
         private static string FormatProbe(double? latency, string status, AppLanguage language)
         {
             return latency.HasValue ? latency.Value.ToString("0.0", CultureInfo.InvariantCulture) + " ms" : Localization.Status(language, status);
+        }
+
+        private static string FormatInternetProbe(Sample sample, AppLanguage language)
+        {
+            if (sample.InternetTargetSucceeded.HasValue && sample.InternetTargetAttempted.HasValue)
+                return sample.InternetTargetSucceeded.Value.ToString(CultureInfo.InvariantCulture) + "/" + sample.InternetTargetAttempted.Value.ToString(CultureInfo.InvariantCulture) +
+                    " targets; median " + FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
+            return FormatProbe(sample.InternetLatencyMs, sample.InternetPingStatus, language);
         }
 
         private static string Format(double? value)
@@ -1350,6 +1744,63 @@ namespace NetworkMonitorApp
             catch (Exception exception)
             {
                 MessageBox.Show("Nu pot deschide folderul logurilor: " + exception.Message, "Monitor retea", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void RouteTraceClicked(object sender, EventArgs e)
+        {
+            DialogResult confirmation = MessageBox.Show(this, Localization.Get(language, "RouteTraceConfirmPrompt"),
+                Localization.Get(language, "RouteTraceConfirmTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (confirmation != DialogResult.Yes) return;
+            routeTraceButton.Enabled = false;
+            statusLabel.Text = Localization.Get(language, "RouteTraceRunning");
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string result;
+                try { result = RouteTrace.Run(); }
+                catch (Exception exception) { result = exception.Message; }
+                SafeBeginInvoke(delegate
+                {
+                    routeTraceButton.Enabled = true;
+                    statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
+                    ShowRouteTraceResult(result);
+                });
+            });
+        }
+
+        private void ShowRouteTraceResult(string result)
+        {
+            using (Form dialog = new Form())
+            {
+                dialog.Text = Localization.Get(language, "RouteTraceButton") + " - " + RouteTrace.Target;
+                dialog.StartPosition = FormStartPosition.CenterParent;
+                dialog.Size = new Size(850, 560);
+                dialog.MinimumSize = new Size(650, 400);
+                Label note = new Label();
+                note.Dock = DockStyle.Top;
+                note.Height = 48;
+                note.Text = language == AppLanguage.Romanian
+                    ? "Rezultatul ramane doar pe acest calculator si nu este salvat sau trimis. Asteriscurile inseamna ca un router nu a raspuns; nu dovedesc o defectiune."
+                    : "The result stays on this PC and is not saved or sent. Asterisks mean a router did not reply; they do not prove a fault.";
+                note.Padding = new Padding(10, 8, 10, 4);
+                TextBox output = new TextBox();
+                output.Dock = DockStyle.Fill;
+                output.Multiline = true;
+                output.ReadOnly = true;
+                output.ScrollBars = ScrollBars.Both;
+                output.WordWrap = false;
+                output.Font = new Font("Consolas", 9F);
+                output.Text = result;
+                Button close = new Button();
+                close.Text = language == AppLanguage.Romanian ? "Inchide" : "Close";
+                close.DialogResult = DialogResult.OK;
+                close.Dock = DockStyle.Bottom;
+                close.Height = 34;
+                dialog.Controls.Add(output);
+                dialog.Controls.Add(close);
+                dialog.Controls.Add(note);
+                dialog.AcceptButton = close;
+                dialog.ShowDialog(this);
             }
         }
 
@@ -1403,6 +1854,117 @@ namespace NetworkMonitorApp
             Test(results, "per endpoint breakdown", WindowWith(delegate(Sample s) { s.HttpsEndpointResults = "www.msftconnecttest.com=Timeout;www.google.com=Success@24ms;cp.cloudflare.com=Failed"; s.HttpsAttempted = 3; s.HttpsSucceeded = 1; }), "www.google.com 6/6");
             Test(results, "icmp filtered but https works", WindowWith(delegate(Sample s) { s.InternetPingStatus = "Unavailable"; s.HttpsStatus = "Success"; }), "nu confirma o cadere de Internet");
             Test(results, "gateway latency spike", WindowWith(delegate(Sample s) { s.GatewayLatencyMs = 180; }), "Latența locala");
+            ProbeResult majorityTargets = NetworkProbe.AggregateInternetTargets(new InternetTargetObservation[]
+            {
+                new InternetTargetObservation { Name = "Cloudflare", Status = "Success", LatencyMs = 20 },
+                new InternetTargetObservation { Name = "Google", Status = "Success", LatencyMs = 40 },
+                new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+            });
+            bool majorityTargetAggregation = majorityTargets.Status == "Success" && majorityTargets.LatencyMs == 30;
+            results.Add((majorityTargetAggregation ? "PASS" : "FAIL") + " | multi-target majority and median | " + (majorityTargetAggregation ? "2/3 targets reachable; median latency selected" : "target aggregation mismatch"));
+            ProbeResult oneTarget = NetworkProbe.AggregateInternetTargets(new InternetTargetObservation[]
+            {
+                new InternetTargetObservation { Name = "Cloudflare", Status = "Success", LatencyMs = 18 },
+                new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+            });
+            ProbeResult noTargets = NetworkProbe.AggregateInternetTargets(new InternetTargetObservation[]
+            {
+                new InternetTargetObservation { Name = "Cloudflare", Status = "TimedOut" },
+                new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+            });
+            bool targetFailureStates = oneTarget.Status == "Partial" && oneTarget.LatencyMs == 18 && noTargets.Status == "AllFailed" && !noTargets.LatencyMs.HasValue;
+            results.Add((targetFailureStates ? "PASS" : "FAIL") + " | partial and total target failure | " + (targetFailureStates ? "single target stays reachable; all-failed stays distinct" : "target failure classification mismatch"));
+            Sample filteredTarget = BaseSample();
+            filteredTarget.InternetTargetResults = new List<InternetTargetObservation>
+            {
+                new InternetTargetObservation { Name = "Cloudflare", Status = "Success", LatencyMs = 20 },
+                new InternetTargetObservation { Name = "Google", Status = "Success", LatencyMs = 24 },
+                new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+            };
+            filteredTarget.Events = "InternetTargetDisagreement";
+            Sample oneTargetNoHttps = BaseSample();
+            oneTargetNoHttps.InternetTargetResults = new List<InternetTargetObservation>
+            {
+                new InternetTargetObservation { Name = "Cloudflare", Status = "Success", LatencyMs = 20 },
+                new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+            };
+            oneTargetNoHttps.HttpsStatus = "AllFailed";
+            Sample allUnavailable = BaseSample();
+            allUnavailable.InternetTargetResults = new List<InternetTargetObservation>
+            {
+                new InternetTargetObservation { Name = "Cloudflare", Status = "TimedOut" },
+                new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+            };
+            allUnavailable.HttpsStatus = "AllFailed";
+            bool connectivityConsensus = NetworkProbe.DetermineConnectivity(filteredTarget) == "OK" &&
+                NetworkProbe.DetermineConnectivity(oneTargetNoHttps) == "Degraded" && NetworkProbe.DetermineConnectivity(allUnavailable) == "OutageSuspected";
+            results.Add((connectivityConsensus ? "PASS" : "FAIL") + " | reachability consensus avoids false outage | " + (connectivityConsensus ? "one filtered target is not treated as an Internet outage" : "connectivity consensus mismatch"));
+            IList<Sample> differingTargets = WindowWith(delegate(Sample s)
+            {
+                s.InternetPingStatus = "Success";
+                s.InternetTargetResults = new List<InternetTargetObservation>
+                {
+                    new InternetTargetObservation { Name = "Cloudflare", Status = "Success", LatencyMs = 20 },
+                    new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                    new InternetTargetObservation { Name = "Quad9", Status = "Success", LatencyMs = 24 }
+                };
+            });
+            bool destinationFinding = DiagnosticEngine.AssessLikelySegment(differingTargets, AppLanguage.English).IndexOf("Some external destinations", StringComparison.Ordinal) >= 0;
+            results.Add((destinationFinding ? "PASS" : "FAIL") + " | destination-specific response disagreement | " + (destinationFinding ? "does not mislabel a single filtered target as full outage" : "destination disagreement not diagnosed"));
+            IList<Sample> upstreamOutage = WindowWith(delegate(Sample s)
+            {
+                s.InternetPingStatus = "AllFailed";
+                s.InternetTargetResults = new List<InternetTargetObservation>
+                {
+                    new InternetTargetObservation { Name = "Cloudflare", Status = "TimedOut" },
+                    new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                    new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+                };
+                s.HttpsStatus = "AllFailed";
+            });
+            bool upstreamFinding = DiagnosticEngine.AssessLikelySegment(upstreamOutage, AppLanguage.English).IndexOf("Beyond the gateway", StringComparison.Ordinal) >= 0;
+            results.Add((upstreamFinding ? "PASS" : "FAIL") + " | gateway-isolated external outage | " + (upstreamFinding ? "gateway success separates upstream-path suspicion" : "upstream segment not identified"));
+            IList<Sample> localOutage = WindowWith(delegate(Sample s)
+            {
+                s.GatewayPingStatus = "TimedOut";
+                s.GatewayLatencyMs = null;
+                s.InternetPingStatus = "AllFailed";
+                s.InternetTargetResults = new List<InternetTargetObservation>
+                {
+                    new InternetTargetObservation { Name = "Cloudflare", Status = "TimedOut" },
+                    new InternetTargetObservation { Name = "Google", Status = "TimedOut" },
+                    new InternetTargetObservation { Name = "Quad9", Status = "TimedOut" }
+                };
+                s.HttpsStatus = "AllFailed";
+            });
+            bool localFinding = DiagnosticEngine.AssessLikelySegment(localOutage, AppLanguage.English).IndexOf("Local link to gateway", StringComparison.Ordinal) >= 0;
+            results.Add((localFinding ? "PASS" : "FAIL") + " | local gateway-correlated outage | " + (localFinding ? "classifies the first failing segment as local" : "local segment not identified"));
+            IList<Sample> routeSwitch = WindowWith(delegate(Sample s) { s.ActiveInterfaceChanged = true; });
+            bool routeSwitchFinding = DiagnosticEngine.AssessLikelySegment(routeSwitch, AppLanguage.English).IndexOf("switched the active route interface", StringComparison.Ordinal) >= 0;
+            results.Add((routeSwitchFinding ? "PASS" : "FAIL") + " | active route switch diagnosis | " + (routeSwitchFinding ? "notes route transitions without inferring cause" : "route switch not surfaced"));
+            IList<Sample> dnsOnly = WindowWith(delegate(Sample s) { s.DnsStatus = "AllFailed"; s.InternetPingStatus = "Success"; });
+            bool dnsFinding = DiagnosticEngine.AssessLikelySegment(dnsOnly, AppLanguage.English).IndexOf("DNS", StringComparison.Ordinal) >= 0;
+            results.Add((dnsFinding ? "PASS" : "FAIL") + " | DNS failure while external IP remains reachable | " + (dnsFinding ? "separates name resolution from IP reachability" : "DNS segment not identified"));
+            bool traceArgumentsSafe = RouteTrace.BuildArguments() == "/d /4 /h 8 /w 350 1.1.1.1";
+            results.Add((traceArgumentsSafe ? "PASS" : "FAIL") + " | bounded route trace arguments | " + (traceArgumentsSafe ? "fixed target; eight hops; 350 ms per probe" : "route trace options changed"));
+            bool interfaceTypes = NetworkProbe.DescribeInterfaceType(NetworkInterfaceType.Wireless80211) == "Wi-Fi" &&
+                NetworkProbe.DescribeInterfaceType(NetworkInterfaceType.Ethernet) == "Ethernet" && NetworkProbe.DescribeInterfaceType(NetworkInterfaceType.Loopback) == "Other";
+            results.Add((interfaceTypes ? "PASS" : "FAIL") + " | active interface categories | " + (interfaceTypes ? "Wi-Fi, Ethernet, and other types distinguished without names" : "interface type mapping mismatch"));
+            List<Sample> loadWindow = new List<Sample>();
+            for (int i = 0; i < 6; i++)
+            {
+                Sample quiet = BaseSample(); quiet.DownloadMbps = 0.1; quiet.UploadMbps = 0.1; quiet.InternetLatencyMs = 20; loadWindow.Add(quiet);
+                Sample active = BaseSample(); active.DownloadMbps = 5.0; active.UploadMbps = 0.1; active.InternetLatencyMs = 100; loadWindow.Add(active);
+            }
+            LoadLatencyComparison loadComparison = LoadLatencyAnalysis.Compare(loadWindow);
+            bool loadCorrelation = loadComparison.QuietSamples == 6 && loadComparison.ActiveSamples == 6 && loadComparison.QuietMedianMs == 20 && loadComparison.ActiveMedianMs == 100;
+            results.Add((loadCorrelation ? "PASS" : "FAIL") + " | passive quiet-vs-active latency comparison | " + (loadCorrelation ? "medians split by this PC's observed traffic; no generated test traffic" : "load correlation mismatch"));
+            bool loadReportCaveat = DiagnosticEngine.Analyze(loadWindow, AppLanguage.English).IndexOf("not a controlled test", StringComparison.OrdinalIgnoreCase) >= 0;
+            results.Add((loadReportCaveat ? "PASS" : "FAIL") + " | load comparison limits | " + (loadReportCaveat ? "clearly labels correlation as observational" : "missing observational limitation"));
             bool englishReport = DiagnosticEngine.Analyze(HealthyWindow(), AppLanguage.English).IndexOf("NETWORK SESSION DIAGNOSIS", StringComparison.Ordinal) >= 0;
             results.Add((englishReport ? "PASS" : "FAIL") + " | English report | " + (englishReport ? "default report language available" : "English report missing"));
             bool pkce = ChatGptPlanClient.CreateCodeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
@@ -1425,7 +1987,7 @@ namespace NetworkMonitorApp
             results.Add((requestIdSanitized ? "PASS" : "FAIL") + " | OAuth request ID display | " + (requestIdSanitized ? "safe request IDs retained; other text rejected" : "request ID sanitization failed"));
             TestOidc(results);
             string summary = ChatGptPlanClient.BuildAggregatedSummary(HealthyWindow(), AppLanguage.English);
-            bool sanitized = summary.IndexOf("192.0.2.45", StringComparison.Ordinal) < 0 && summary.IndexOf("MyPrivateWifi", StringComparison.Ordinal) < 0;
+            bool sanitized = summary.IndexOf("192.0.2.45", StringComparison.Ordinal) < 0 && summary.IndexOf("MyPrivateWifi", StringComparison.Ordinal) < 0 && summary.IndexOf("1.1.1.1", StringComparison.Ordinal) < 0 && summary.IndexOf("8.8.8.8", StringComparison.Ordinal) < 0;
             results.Add((sanitized ? "PASS" : "FAIL") + " | AI summary privacy | " + (sanitized ? "no raw network identifiers" : "raw identifier present"));
             Dictionary<string, object> aiPayload = ChatGptPlanClient.CreateResponsesPayload("test-model",
                 new Dictionary<string, object> { { "role", "developer" }, { "content", "instructions" } },
@@ -1470,7 +2032,7 @@ namespace NetworkMonitorApp
                 !NetworkProbe.CalculateMegabitsPerSecond(100, 200, 1).HasValue &&
                 !NetworkProbe.CalculateMegabitsPerSecond(200, 100, 0).HasValue;
             results.Add((rateCalculation ? "PASS" : "FAIL") + " | passive network traffic rates | " + (rateCalculation ? "Mbps conversion and counter resets handled" : "traffic rate calculation mismatch"));
-            bool csvSchema = CsvLogger.HeaderMatches("\uFEFF" + "TimestampLocal,WifiState,WifiSignalPercent,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps") &&
+            bool csvSchema = CsvLogger.HeaderMatches("\uFEFF" + "TimestampLocal,WifiState,WifiSignalPercent,ActiveInterfaceType,GatewayPingStatus,GatewayLatencyMs,GatewayIcmpLossPctRolling60s,InternetPingStatus,InternetLatencyMs,InternetIcmpLossPctRolling60s,InternetTargets,InternetTargetsSucceeded,InternetTargetsAttempted,HttpsFallbackStatus,HttpsFallbackLatencyMs,HttpsEndpoints,HttpsSucceeded,HttpsAttempted,DnsStatus,DnsLatencyMs,DnsEndpoints,DnsSucceeded,DnsAttempted,Connectivity,Events,NetworkDownloadMbps,NetworkUploadMbps") &&
                 !CsvLogger.HeaderMatches("TimestampLocal,WifiState,Events");
             results.Add((csvSchema ? "PASS" : "FAIL") + " | CSV schema migration guard | " + (csvSchema ? "new schema recognized; old file will be rotated intact" : "CSV schema guard failed"));
             bool chartRenders = false;
