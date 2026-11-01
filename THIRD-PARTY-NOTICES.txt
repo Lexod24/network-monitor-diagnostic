@@ -1,0 +1,11 @@
+Third-party components distributed with Network Monitor Diagnostic
+
+Microsoft.Web.WebView2 SDK 1.0.4314.35
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+The application embeds the WebView2 Core and WinForms managed assemblies and the
+x86/x64 WebView2Loader native libraries from the Microsoft.Web.WebView2 NuGet
+package. The package license and additional notice are included in the source
+repository at vendor/WebView2/LICENSE.txt and vendor/WebView2/NOTICE.txt and in
+the portable ZIP alongside this notice. The WebView2 Runtime itself is not
+bundled and is supplied/serviced by Microsoft on the user's system.

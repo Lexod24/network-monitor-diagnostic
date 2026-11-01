@@ -41,6 +41,10 @@ The provider selected in **AI options** is used for explanation after monitoring
 
 ## Measurements and diagnosis
 
+### Provider speed tests and history
+
+The **Speed test** page can display Ookla, Netograf, DIGI, or Vodafone within the Windows app using Microsoft WebView2. Loading is user initiated after a notice about potentially substantial traffic, temporary effects on monitoring and ping, and the provider's separate processing of public IP and browser/connection data. Provider pages run as top-level pages: the app does not bypass their embedding/security rules, inspect their contents, scrape or save page results, or send those results to AI. The isolated WebView2 profile uses a temporary folder that is deleted when the app closes. If WebView2 Runtime is unavailable or a page reports an error, the app offers an explicit browser fallback. The Vodafone public endpoint may not be available. Results must be entered manually in **History**, where they remain local and can be charted, deleted, or exported to CSV. The included Microsoft WebView2 SDK components are listed in `THIRD-PARTY-NOTICES.txt`; the WebView2 Runtime is provided by Microsoft and is not bundled.
+
 - Wi-Fi connection state and Windows-reported signal strength when available.
 - ICMP response, latency, and rolling non-response rates to the gateway and three independent public targets over IPv4 and IPv6 (Cloudflare, Google, and Quad9). The report keeps address families separate; a ping non-response is not proof that application traffic was lost.
 - The Windows route interface is selected for gateway and passive traffic measurements, preferring an IPv4 route when present and using IPv6 when IPv4 routing is unavailable. Tunnel-type interfaces are labeled separately, but Windows adapter types do not reliably identify every VPN. Interface IDs are used only in memory; logs store only a broad type.
@@ -56,7 +60,7 @@ The report compares gateway, IPv4, IPv6, HTTPS, and DNS evidence, suggests the f
 
 ## Build and test
 
-Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`, the portable ZIP, and the SHA-256 update manifest. Bump `AppVersion.Current` and the assembly version in `src\AppVersion.cs` when publishing a new version, then commit the generated ZIP and `update.json` together. Run `tests\run-self-tests.ps1` for deterministic IPv4/IPv6 aggregation, endpoint/outage classification, Ethernet/Wi-Fi relevance, proxy/captive-portal heuristics, relative latency spikes, passive load comparison, route-trace bounds, CSV columns/privacy/schema migration, chart rendering, OAuth validation, update manifest/hash validation, localization, and AI privacy tests. The GitHub Actions workflow builds the app and runs the suite on Windows. Automated tests cannot substitute for testing every adapter, VPN, Windows locale, router, or network.
+Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`, the portable ZIP, and the SHA-256 update manifest. Bump `AppVersion.Current` and the assembly version in `src\AppVersion.cs` when publishing a new version, then commit the generated ZIP and `update.json` together. Run `tests\run-self-tests.ps1` for deterministic IPv4/IPv6 aggregation, endpoint/outage classification, Ethernet/Wi-Fi relevance, proxy/captive-portal heuristics, relative latency spikes, passive load comparison, route-trace bounds, local history validation/persistence/export/delete, charts, OAuth validation, update manifest/hash validation, localization, and AI privacy tests. On a Windows PC with WebView2 Runtime, `tests\run-webview2-smoke.ps1` additionally checks runtime initialization, successful local navigation, loopback error detection, and Back; it sends no speed-test traffic to external providers. The GitHub Actions workflow builds the app and runs the deterministic suite on Windows. Automated tests cannot substitute for testing every adapter, VPN, Windows locale, router, or network.
 
 ## License
 

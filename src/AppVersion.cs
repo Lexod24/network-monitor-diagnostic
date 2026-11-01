@@ -1,13 +1,13 @@
 using System.Reflection;
 
-[assembly: AssemblyVersion("1.1.2.0")]
-[assembly: AssemblyFileVersion("1.1.2.0")]
-[assembly: AssemblyInformationalVersion("1.1.2")]
+[assembly: AssemblyVersion("1.1.3.0")]
+[assembly: AssemblyFileVersion("1.1.3.0")]
+[assembly: AssemblyInformationalVersion("1.1.3")]
 
 namespace NetworkMonitorApp
 {
     internal static class AppVersion
     {
-        internal const string Current = "1.1.2";
+        internal const string Current = "1.1.3";
     }
 }

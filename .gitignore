@@ -1,5 +1,9 @@
 /dist/
+/vendor/WebView2-1.0.4314.35/package/
 /tests/*.exe
+/tests/Microsoft.Web.WebView2.*.dll
+/tests/WebView2Loader.dll
+/tests/WebView2Smoke.exe.WebView2/
 *.pdb
 *.user
 *.suo

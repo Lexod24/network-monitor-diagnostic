@@ -2464,9 +2464,11 @@ namespace NetworkMonitorApp
         private readonly GlassButton monitorViewButton;
         private readonly GlassButton reportViewButton;
         private readonly GlassButton historyViewButton;
+        private readonly GlassButton speedTestViewButton;
         private readonly Panel monitorPage;
         private readonly Panel reportPage;
         private readonly Panel historyPage;
+        private readonly SpeedTestPage speedTestPage;
         private readonly Panel viewHost;
         private readonly Panel monitorStack;
         private Label historyHeading;
@@ -2595,6 +2597,10 @@ namespace NetworkMonitorApp
             historyViewButton.Location = new Point(348, 6);
             historyViewButton.Click += delegate { ShowHistoryView(); };
             navigation.Controls.Add(historyViewButton);
+            speedTestViewButton = CreateNavigationButton(Localization.Get(language, "SpeedTab"));
+            speedTestViewButton.Location = new Point(458, 6);
+            speedTestViewButton.Click += delegate { ShowSpeedTestView(); };
+            navigation.Controls.Add(speedTestViewButton);
 
             footerLabel = new Label { Text = Localization.Get(language, "Footer"), Dock = DockStyle.Bottom, Height = 28, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(26, 0, 0, 0), ForeColor = Color.FromArgb(112, 118, 128), BackColor = Color.White, Font = new Font("Segoe UI", 8F) };
             Controls.Add(footerLabel);
@@ -2606,9 +2612,11 @@ namespace NetworkMonitorApp
             monitorPage = new LiquidBackdropPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = LiquidGlassTheme.Window };
             reportPage = new LiquidBackdropPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = LiquidGlassTheme.Window, Visible = false };
             historyPage = new LiquidBackdropPanel { Dock = DockStyle.Fill, AutoScroll = true, BackColor = LiquidGlassTheme.Window, Visible = false };
+            speedTestPage = new SpeedTestPage(OpenHistoryForSpeedTest) { Visible = false };
             viewHost.Controls.Add(monitorPage);
             viewHost.Controls.Add(reportPage);
             viewHost.Controls.Add(historyPage);
+            viewHost.Controls.Add(speedTestPage);
 
             monitorStack = new Panel { Location = new Point(24, 18), Height = 830, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right, BackColor = Color.Transparent };
             monitorPage.Controls.Add(monitorStack);
@@ -3197,6 +3205,7 @@ namespace NetworkMonitorApp
             monitorViewButton.Text = Localization.Get(language, "MonitorOverview");
             reportViewButton.Text = Localization.Get(language, "MonitorDiagnosis");
             historyViewButton.Text = Localization.Get(language, "HistoryTab");
+            speedTestViewButton.Text = Localization.Get(language, "SpeedTab");
             reportEyebrow.Text = language == AppLanguage.Romanian ? "RAPORTUL SESIUNII" : "SESSION REPORT";
             reportIntro.Text = language == AppLanguage.Romanian ? "Constatări și pași următori" : "Findings and next steps";
             overviewSummary.Text = reportPreparing
@@ -3213,6 +3222,7 @@ namespace NetworkMonitorApp
             diagnosisHeading.Text = language == AppLanguage.Romanian ? "DOVEZI ȘI PAȘI URMĂTORI" : "EVIDENCE & NEXT STEPS";
             footerLabel.Text = Localization.Get(language, "Footer");
             latencyChart.Language = language;
+            speedTestPage.Language = language;
             grid.Columns[0].HeaderText = Localization.Get(language, "Time");
             grid.Columns[1].HeaderText = Localization.Get(language, "GridWiFi");
             grid.Columns[2].HeaderText = Localization.Get(language, "GridSignal");
@@ -3367,10 +3377,12 @@ namespace NetworkMonitorApp
             monitorPage.Visible = true;
             reportPage.Visible = false;
             historyPage.Visible = false;
+            speedTestPage.Visible = false;
             monitorPage.BringToFront();
             StyleNavigationButton(monitorViewButton, true);
             StyleNavigationButton(reportViewButton, false);
             StyleNavigationButton(historyViewButton, false);
+            StyleNavigationButton(speedTestViewButton, false);
         }
 
         private void ShowReportView()
@@ -3378,10 +3390,12 @@ namespace NetworkMonitorApp
             monitorPage.Visible = false;
             reportPage.Visible = true;
             historyPage.Visible = false;
+            speedTestPage.Visible = false;
             reportPage.BringToFront();
             StyleNavigationButton(monitorViewButton, false);
             StyleNavigationButton(reportViewButton, true);
             StyleNavigationButton(historyViewButton, false);
+            StyleNavigationButton(speedTestViewButton, false);
         }
 
         private void ShowHistoryView()
@@ -3389,11 +3403,33 @@ namespace NetworkMonitorApp
             monitorPage.Visible = false;
             reportPage.Visible = false;
             historyPage.Visible = true;
+            speedTestPage.Visible = false;
             historyPage.BringToFront();
             StyleNavigationButton(monitorViewButton, false);
             StyleNavigationButton(reportViewButton, false);
             StyleNavigationButton(historyViewButton, true);
+            StyleNavigationButton(speedTestViewButton, false);
             RenderSpeedHistory();
+        }
+
+        private void ShowSpeedTestView()
+        {
+            monitorPage.Visible = false;
+            reportPage.Visible = false;
+            historyPage.Visible = false;
+            speedTestPage.Visible = true;
+            speedTestPage.BringToFront();
+            StyleNavigationButton(monitorViewButton, false);
+            StyleNavigationButton(reportViewButton, false);
+            StyleNavigationButton(historyViewButton, false);
+            StyleNavigationButton(speedTestViewButton, true);
+        }
+
+        private void OpenHistoryForSpeedTest(string provider)
+        {
+            if (historyProviderInput != null) historyProviderInput.Text = provider ?? String.Empty;
+            ShowHistoryView();
+            if (historyProviderInput != null) historyProviderInput.Focus();
         }
 
         private static void StyleNavigationButton(GlassButton button, bool active)
@@ -4506,6 +4542,60 @@ namespace NetworkMonitorApp
             catch { historyPageLocalization = false; }
             results.Add((historyPageLocalization ? "PASS" : "FAIL") + " | speed history page and instant language switch | " + (historyPageLocalization ? "page renders and grid headers switch both ways" : "history page initialization or localization failed"));
 
+            bool speedProviderPolicy = SpeedTestProviderCatalog.All.Count == 4 &&
+                SpeedTestProviderCatalog.Find("Ookla") != null && SpeedTestProviderCatalog.Find("Netograf") != null &&
+                SpeedTestProviderCatalog.Find("DIGI") != null && SpeedTestProviderCatalog.Find("Vodafone") != null &&
+                SpeedTestProviderCatalog.All.All(delegate(SpeedTestProvider provider) { Uri uri; return Uri.TryCreate(provider.Url, UriKind.Absolute, out uri) && uri.Scheme == Uri.UriSchemeHttps; }) &&
+                SpeedTestNavigationPolicy.IsAllowedTopLevelUri(SpeedTestProviderCatalog.Find("DIGI"), "https://speedcheck-b.rcs-rds.ro/") &&
+                !SpeedTestNavigationPolicy.IsAllowedTopLevelUri(SpeedTestProviderCatalog.Find("DIGI"), "http://www.digi.ro/") &&
+                !SpeedTestNavigationPolicy.IsAllowedTopLevelUri(SpeedTestProviderCatalog.Find("Ookla"), "https://example.com/");
+            bool speedFallbackPolicy = SpeedTestNavigationPolicy.ShouldFallback(false, 0) &&
+                SpeedTestNavigationPolicy.ShouldFallback(true, 404) &&
+                SpeedTestNavigationPolicy.ShouldFallback(true, 500) &&
+                !SpeedTestNavigationPolicy.ShouldFallback(true, 200) &&
+                !SpeedTestNavigationPolicy.ShouldFallback(true, 302);
+            bool speedPageLocalization = Localization.Get(AppLanguage.English, "SpeedTab") == "Speed test" &&
+                Localization.Get(AppLanguage.Romanian, "SpeedTab") == "Test de viteză" &&
+                Localization.Get(AppLanguage.Romanian, "SpeedDisclosure").IndexOf("nu le salvează în istoric", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                Localization.Get(AppLanguage.English, "SpeedDisclosure").IndexOf("save them to history", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                Localization.Get(AppLanguage.Romanian, "SpeedDisclosure").IndexOf("se șterge la închiderea aplicației", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                Localization.Get(AppLanguage.English, "SpeedDisclosure").IndexOf("removed when the app closes", StringComparison.OrdinalIgnoreCase) >= 0;
+            results.Add((speedProviderPolicy ? "PASS" : "FAIL") + " | speed provider and HTTPS navigation policy | " + (speedProviderPolicy ? "four fixed providers, HTTPS-only, provider hosts allowlisted" : "provider catalog or navigation allowlist mismatch"));
+            results.Add((speedFallbackPolicy ? "PASS" : "FAIL") + " | speed-page error and browser-fallback policy | " + (speedFallbackPolicy ? "navigation errors and HTTP 4xx/5xx offer fallback; successful responses do not" : "fallback classification mismatch"));
+            results.Add((speedPageLocalization ? "PASS" : "FAIL") + " | speed-test notices and localization | " + (speedPageLocalization ? "English and Romanian disclose traffic, provider processing, manual/local history, and no AI transfer" : "speed-test translations or privacy notice missing"));
+
+            bool speedPageStartupAndHistory = false;
+            string speedPageStartupDetails = "not run";
+            try
+            {
+                using (MainForm form = new MainForm())
+                {
+                    SpeedTestPage page = (SpeedTestPage)typeof(MainForm).GetField("speedTestPage", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    FieldInfo webViewField = typeof(SpeedTestPage).GetField("webView", BindingFlags.Instance | BindingFlags.NonPublic);
+                    ComboBox providerSelector = (ComboBox)typeof(SpeedTestPage).GetField("providerSelector", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(page);
+                    GlassButton fallbackButton = (GlassButton)typeof(SpeedTestPage).GetField("browserButton", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(page);
+                    GlassButton historyButton = (GlassButton)typeof(SpeedTestPage).GetField("historyButton", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(page);
+                    GlassComboBox languageSelector = (GlassComboBox)typeof(MainForm).GetField("languageSelector", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    Panel historyPage = (Panel)typeof(MainForm).GetField("historyPage", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    ComboBox historyProvider = (ComboBox)typeof(MainForm).GetField("historyProviderInput", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(form);
+                    bool noStartupWebView = webViewField.GetValue(page) == null;
+                    languageSelector.SelectedIndex = 1;
+                    bool romanian = page.Controls.OfType<Label>().Any(delegate(Label label) { return label.Text == "Test de viteză"; });
+                    languageSelector.SelectedIndex = 0;
+                    bool english = page.Controls.OfType<Label>().Any(delegate(Label label) { return label.Text == "Speed test"; });
+                    providerSelector.SelectedIndex = 2;
+                    typeof(Control).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(historyButton, new object[] { EventArgs.Empty });
+                    page.ApplyNavigationResult(false, 0);
+                    bool errorShowsFallback = fallbackButton.Enabled;
+                    page.ApplyNavigationResult(true, 200);
+                    bool fallbackAvailableAfterLoad = fallbackButton.Enabled;
+                    speedPageStartupAndHistory = noStartupWebView && romanian && english && historyProvider.Text == "DIGI" && errorShowsFallback && fallbackAvailableAfterLoad;
+                    speedPageStartupDetails = "webview=" + noStartupWebView + ", ro=" + romanian + ", en=" + english + ", provider=" + historyProvider.Text + ", errorFallback=" + errorShowsFallback + ", fallbackAfterLoad=" + fallbackAvailableAfterLoad;
+                }
+            }
+            catch (Exception ex) { speedPageStartupAndHistory = false; speedPageStartupDetails = ex.GetType().Name + ": " + ex.Message; }
+            results.Add((speedPageStartupAndHistory ? "PASS" : "FAIL") + " | speed page startup, language switch, and history handoff | " + (speedPageStartupAndHistory ? "no embedded test starts automatically; page switches languages and presets the selected provider in local history" : speedPageStartupDetails));
+
             bool chartRenders = false;
             try
             {
@@ -4662,6 +4752,7 @@ namespace NetworkMonitorApp
         [STAThread]
         private static int Main(string[] args)
         {
+            WebView2EmbeddedRuntime.RegisterAssemblyResolver();
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
             if (args.Length > 0 && String.Equals(args[0], "--apply-update", StringComparison.OrdinalIgnoreCase))
                 return AutoUpdater.ApplyStagedUpdate(args);
