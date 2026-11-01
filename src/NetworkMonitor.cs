@@ -1159,6 +1159,11 @@ namespace NetworkMonitorApp
             results.Add((englishReport ? "PASS" : "FAIL") + " | English report | " + (englishReport ? "default report language available" : "English report missing"));
             bool pkce = ChatGptPlanClient.CreateCodeChallenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk") == "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
             results.Add((pkce ? "PASS" : "FAIL") + " | PKCE S256 | " + (pkce ? "RFC challenge vector matches" : "challenge mismatch"));
+            bool loopbackCallback = false;
+            string loopbackError = "";
+            try { loopbackCallback = ChatGptPlanClient.SelfTestLoopbackCallback(); }
+            catch (Exception exception) { loopbackError = exception.Message; }
+            results.Add((loopbackCallback ? "PASS" : "FAIL") + " | OAuth loopback callback | " + (loopbackCallback ? "local callback received and parsed" : "local callback failed: " + loopbackError));
             TestOidc(results);
             string summary = ChatGptPlanClient.BuildAggregatedSummary(HealthyWindow(), AppLanguage.English);
             bool sanitized = summary.IndexOf("192.0.2.45", StringComparison.Ordinal) < 0 && summary.IndexOf("MyPrivateWifi", StringComparison.Ordinal) < 0;
@@ -1300,4 +1305,3 @@ namespace NetworkMonitorApp
         }
     }
 }
-

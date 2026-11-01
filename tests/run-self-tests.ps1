@@ -9,4 +9,3 @@ if (-not (Test-Path $csc)) { throw 'The .NET Framework C# compiler was not found
 if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
 & $exe --self-test
 if ($LASTEXITCODE -ne 0) { throw 'One or more self-tests failed.' }
-

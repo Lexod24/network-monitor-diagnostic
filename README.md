@@ -14,6 +14,7 @@ A portable Windows desktop app that monitors connection quality and produces a t
 4. For an optional AI explanation, select **Continue with ChatGPT** and approve the request. The app opens the official ChatGPT sign-in in your browser. Sign in with your own account and grant the requested permission. Return to the app; after monitoring stops, it can request a plain-language explanation of the aggregated results. Use **Disconnect ChatGPT** to remove the local session and request remote revocation.
 
 AI is optional. Without it, the complete local diagnosis still works. AI output is supplemental and may be wrong; compare it with the measurements and the deterministic local findings. Eligible ChatGPT plan access and limits belong to the signed-in user's account. This app contains no shared API key and does not charge the publisher for other users' requests.
+The sign-in callback listens on `127.0.0.1`, preferring port `1455` and selecting another available port if needed. Keep the app open and finish browser sign-in within 15 minutes.
 
 ## Privacy
 
@@ -36,4 +37,3 @@ Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`. Run `tests\run-s
 ## License
 
 MIT. See [LICENSE](LICENSE).
-

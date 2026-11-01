@@ -33,6 +33,8 @@ namespace NetworkMonitorApp
         private const string JwksEndpoint = "https://auth.openai.com/.well-known/jwks.json";
         private const string Resource = "https://api.openai.com/v1";
         private const string RequiredScope = "chatgpt.tokens.use.direct";
+        private const int PreferredLoopbackPort = 1455;
+        private const int CallbackTimeoutMinutes = 15;
         private const string Scope = "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
         private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("NetworkMonitor.ChatGPT.credentials.v1");
         private static readonly object Gate = new object();
@@ -91,7 +93,7 @@ namespace NetworkMonitorApp
                 {
                     string authorizeUrl = AuthEndpoint + "?" + FormEncode(query);
                     ProcessBrowser(authorizeUrl);
-                    Dictionary<string, string> callback = ReadCallback(listener, redirectUri);
+                    Dictionary<string, string> callback = ReadCallback(listener, redirectUri, TimeSpan.FromMinutes(CallbackTimeoutMinutes));
                     if (!callback.ContainsKey("state") || !SecureEquals(state, callback["state"]))
                         throw new InvalidOperationException("The sign-in response could not be validated. Please try again.");
                     if (callback.ContainsKey("error"))
@@ -377,15 +379,51 @@ namespace NetworkMonitorApp
 
         private static TcpListener StartLoopbackListener(out int port)
         {
-            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
-            listener.Start(1);
+            TcpListener listener = new TcpListener(IPAddress.Loopback, PreferredLoopbackPort);
+            try
+            {
+                listener.Start(1);
+            }
+            catch (SocketException)
+            {
+                try { listener.Stop(); } catch { }
+                listener = new TcpListener(IPAddress.Loopback, 0);
+                try
+                {
+                    listener.Start(1);
+                }
+                catch (SocketException ex)
+                {
+                    try { listener.Stop(); } catch { }
+                    throw new InvalidOperationException("The local ChatGPT sign-in callback could not start. Close another sign-in attempt and try again.", ex);
+                }
+            }
             port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+            // Prove that this process can reach its own callback before opening the browser.
+            // This catches local bind/proxy/firewall problems early, while the app can show a useful error.
+            try
+            {
+                using (TcpClient probe = new TcpClient(AddressFamily.InterNetwork))
+                {
+                    IAsyncResult pending = probe.BeginConnect(IPAddress.Loopback, port, null, null);
+                    if (!pending.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(3)))
+                        throw new SocketException((int)SocketError.TimedOut);
+                    probe.EndConnect(pending);
+                }
+                using (TcpClient accepted = listener.AcceptTcpClient()) { }
+            }
+            catch (Exception ex)
+            {
+                try { listener.Stop(); } catch { }
+                throw new InvalidOperationException("Windows could not reach the local ChatGPT sign-in callback. Check whether security software is blocking local connections, then try again.", ex);
+            }
             return listener;
         }
 
-        private static Dictionary<string, string> ReadCallback(TcpListener listener, string redirectUri)
+        private static Dictionary<string, string> ReadCallback(TcpListener listener, string redirectUri, TimeSpan timeout)
         {
-            DateTime callbackDeadline = DateTime.UtcNow.AddMinutes(5);
+            DateTime callbackDeadline = DateTime.UtcNow.Add(timeout);
             while (!listener.Pending())
             {
                 if (DateTime.UtcNow >= callbackDeadline)
@@ -402,8 +440,10 @@ namespace NetworkMonitorApp
                     string requestLine = ReadHttpLine(stream, 8192);
                     string[] parts = requestLine.Split(' ');
                     if (parts.Length < 2 || parts[0] != "GET") throw new InvalidOperationException("Invalid sign-in callback.");
-                    Uri callbackUri = new Uri("http://127.0.0.1" + parts[1]);
                     Uri expected = new Uri(redirectUri);
+                    if (!parts[1].StartsWith("/", StringComparison.Ordinal) || parts[1].StartsWith("//", StringComparison.Ordinal))
+                        throw new InvalidOperationException("Invalid sign-in callback target.");
+                    Uri callbackUri = new Uri(expected.GetLeftPart(UriPartial.Authority) + parts[1]);
                     if (callbackUri.AbsolutePath != expected.AbsolutePath || callbackUri.Port != expected.Port)
                         throw new InvalidOperationException("The sign-in callback did not match this attempt.");
                     string line;
@@ -419,6 +459,49 @@ namespace NetworkMonitorApp
                     foreach (string key in query.AllKeys) if (!String.IsNullOrEmpty(key)) values[key] = query[key];
                     return values;
                 }
+            }
+        }
+
+        internal static bool SelfTestLoopbackCallback()
+        {
+            TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start(1);
+            int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            string redirectUri = "http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture) + "/auth/callback";
+            Exception clientError = null;
+            Thread clientThread = new Thread(delegate()
+            {
+                try
+                {
+                    using (TcpClient client = new TcpClient(AddressFamily.InterNetwork))
+                    {
+                        client.Connect(IPAddress.Loopback, port);
+                        client.ReceiveTimeout = 3000;
+                        using (NetworkStream stream = client.GetStream())
+                        {
+                            byte[] request = Encoding.ASCII.GetBytes("GET /auth/callback?code=test-code&state=test-state HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+                            stream.Write(request, 0, request.Length);
+                            stream.Flush();
+                            if (ReadHttpLine(stream, 1024).IndexOf("200 OK", StringComparison.Ordinal) < 0)
+                                throw new InvalidOperationException("Loopback callback response was not successful.");
+                        }
+                    }
+                }
+                catch (Exception ex) { clientError = ex; }
+            });
+            clientThread.IsBackground = true;
+            try
+            {
+                clientThread.Start();
+                Dictionary<string, string> callback = ReadCallback(listener, redirectUri, TimeSpan.FromSeconds(5));
+                clientThread.Join(3000);
+                return clientError == null && callback.ContainsKey("code") && callback["code"] == "test-code" &&
+                    callback.ContainsKey("state") && callback["state"] == "test-state";
+            }
+            finally
+            {
+                try { listener.Stop(); } catch { }
+                if (clientThread.IsAlive) clientThread.Join(1000);
             }
         }
 
@@ -655,4 +738,3 @@ namespace NetworkMonitorApp
         }
     }
 }
-

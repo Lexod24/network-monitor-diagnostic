@@ -9,6 +9,7 @@ Start: Double-click NetworkMonitor.exe. No installation or administrator rights 
 
 Optional ChatGPT explanation:
 Click Continue with ChatGPT. The official OpenAI sign-in opens in your browser. Sign in to your own account and approve the requested use. Return to this app. The AI explanation is supplemental; the local evidence-based diagnosis works without AI. Requests use the signed-in account's eligibility and usage limits. No shared API key is included.
+Keep the app open while signing in. The local callback uses 127.0.0.1 port 1455 when available, or another free port, and waits up to 15 minutes.
 
 The AI receives only an aggregated measurement summary, not the raw CSV, Wi-Fi name, IP addresses, exact timestamps, or credentials. OAuth credentials are protected locally for the current Windows user. Disconnect ChatGPT removes the local session and attempts remote revocation.
 
@@ -18,4 +19,3 @@ Pentru romana: Porneste monitorizarea in timpul problemei si apasa Opreste si an
 
 GitHub source and details: https://github.com/Lexod24/network-monitor-diagnostic
 License: MIT.
-
