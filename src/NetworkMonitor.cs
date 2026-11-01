@@ -1155,6 +1155,7 @@ namespace NetworkMonitorApp
         protected override void OnMouseLeave(EventArgs e) { hovering = false; pressed = false; Invalidate(); base.OnMouseLeave(e); }
         protected override void OnMouseDown(MouseEventArgs e) { if (e.Button == MouseButtons.Left && Enabled) { pressed = true; Focus(); Invalidate(); } base.OnMouseDown(e); }
         protected override void OnMouseUp(MouseEventArgs e) { bool click = pressed && e.Button == MouseButtons.Left && ClientRectangle.Contains(e.Location); pressed = false; Invalidate(); base.OnMouseUp(e); if (click) PerformClick(); }
+        protected override void OnTextChanged(EventArgs e) { base.OnTextChanged(e); Invalidate(); }
         protected override void OnEnabledChanged(EventArgs e) { Invalidate(); base.OnEnabledChanged(e); }
         protected override void OnBackColorChanged(EventArgs e) { Invalidate(); base.OnBackColorChanged(e); }
         protected override void OnSizeChanged(EventArgs e) { base.OnSizeChanged(e); UpdateRoundedRegion(); }
@@ -1266,7 +1267,12 @@ namespace NetworkMonitorApp
     internal sealed class LatencyChartPanel : Panel
     {
         private List<Sample> samples = new List<Sample>();
-        public AppLanguage Language = AppLanguage.English;
+        private AppLanguage language = AppLanguage.English;
+        public AppLanguage Language
+        {
+            get { return language; }
+            set { if (language != value) { language = value; Invalidate(); } }
+        }
 
         public LatencyChartPanel()
         {
@@ -2281,6 +2287,17 @@ namespace NetworkMonitorApp
         private DateTimeOffset nextDnsCheck;
         private bool updateCheckStarted;
         private bool updateInstallStarted;
+        private bool reportPreparing;
+        private bool reportReady;
+        private bool aiSignInInProgress;
+        private bool aiDisconnectInProgress;
+        private bool aiAnalysisInProgress;
+        private bool routeTraceInProgress;
+        private string reportAiExplanation;
+        private string reportAiProvider;
+        private bool reportAiAttempted;
+        private bool reportAiFailed;
+        private AppLanguage reportAiLanguage = AppLanguage.English;
 
         public MainForm()
         {
@@ -2541,23 +2558,33 @@ namespace NetworkMonitorApp
 
         private void ApplyLanguage()
         {
+            List<Sample> copy;
+            lock (samplesGate) copy = new List<Sample>(samples);
+            Sample latest = copy.Count == 0 ? null : copy[copy.Count - 1];
+
             Text = Localization.Get(language, "AppTitle");
             headingLabel.Text = Localization.Get(language, "Heading");
             headerSubtitle.Text = Localization.Get(language, "HeaderSubtitle");
-            startStopButton.Text = Localization.Get(language, monitoring ? (awaitingInitialSample ? "StartingMonitoring" : "Stop") : (samples.Count > 0 ? "Restart" : "Start"));
-            startStopButton.Enabled = !awaitingInitialSample;
+            startStopButton.Text = Localization.Get(language, monitoring ? (awaitingInitialSample ? "StartingMonitoring" : "Stop") : (copy.Count > 0 ? "Restart" : "Start"));
+            startStopButton.Enabled = !awaitingInitialSample && !updateInstallStarted && !reportPreparing;
             startStopButton.BackColor = monitoring && !awaitingInitialSample ? LiquidGlassTheme.Danger : LiquidGlassTheme.Sapphire;
             startStopButton.ForeColor = Color.FromArgb(9, 15, 24);
-            statusLabel.ForeColor = monitoring ? LiquidGlassTheme.Good : LiquidGlassTheme.Text;
             openLogsButton.Text = Localization.Get(language, "OpenLogs");
             copyReportButton.Text = Localization.Get(language, "CopyReport");
             routeTraceButton.Text = Localization.Get(language, "RouteTraceButton");
             aiButton.Text = Localization.Get(language, "ContinueChatGPT");
             aiSettingsButton.Text = Localization.Get(language, "AISettings");
             disconnectAiButton.Text = Localization.Get(language, "DisconnectChatGPT");
-            aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
-            disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
-            statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
+            aiStatusLabel.Text = Localization.Get(language, aiSignInInProgress ? "AISigningIn" : aiDisconnectInProgress ? "AIDisconnecting" : aiAnalysisInProgress ? "AIAnalyzingStatus" : CurrentAiStatusKey());
+            aiButton.Enabled = !aiSignInInProgress && !aiDisconnectInProgress;
+            disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected && !aiSignInInProgress && !aiDisconnectInProgress;
+            if (updateInstallStarted) statusLabel.Text = Localization.Get(language, "UpdateStarting");
+            else if (routeTraceInProgress) statusLabel.Text = Localization.Get(language, "RouteTraceRunning");
+            else if (reportPreparing) statusLabel.Text = Localization.Get(language, "Stopping");
+            else if (reportReady) statusLabel.Text = Localization.Get(language, "SessionAnalyzed");
+            else if (monitoring && latest != null) statusLabel.Text = ConnectivityLabel(latest.Connectivity, language);
+            else statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
+            statusLabel.ForeColor = monitoring ? LiquidGlassTheme.Good : (reportReady ? LiquidGlassTheme.Sapphire : LiquidGlassTheme.Text);
             heroEyebrow.Text = Localization.Get(language, "ConnectionStatus");
             metricHeading.Text = Localization.Get(language, "MetricHeading");
             metricNote.Text = Localization.Get(language, "MetricProbeNote");
@@ -2574,11 +2601,17 @@ namespace NetworkMonitorApp
             reportViewButton.Text = Localization.Get(language, "MonitorDiagnosis");
             reportEyebrow.Text = language == AppLanguage.Romanian ? "RAPORTUL SESIUNII" : "SESSION REPORT";
             reportIntro.Text = language == AppLanguage.Romanian ? "Constatări și pași următori" : "Findings and next steps";
-            overviewSummary.Text = monitoring
-                ? (language == AppLanguage.Romanian ? "Monitorizarea rulează. Las-o activă până când apare sau trece problema." : "Monitoring is running. Leave it active until the issue appears or passes.")
-                : samples.Count > 0
-                    ? (language == AppLanguage.Romanian ? "Sesiune oprită. Deschide diagnosticul pentru dovezi și pașii următori." : "Session stopped. Open Diagnosis for evidence and next steps.")
-                    : (language == AppLanguage.Romanian ? "Pornește monitorizarea când apare problema. Diagnosticul local nu necesită cont sau cheie AI." : "Start monitoring when the issue happens. Local diagnosis needs no account or AI key.");
+            overviewSummary.Text = reportPreparing
+                ? Localization.Get(language, "ReportPreparing")
+                : reportReady
+                    ? Localization.Format(language, "SessionReportReadySummary", copy.Count)
+                    : monitoring && latest != null
+                        ? NextStepSummary(latest, language)
+                        : monitoring
+                            ? Localization.Get(language, "MonitoringSummary")
+                            : copy.Count > 0
+                                ? Localization.Get(language, "SessionStoppedSummary")
+                                : Localization.Get(language, "InitialMonitoringSummary");
             diagnosisHeading.Text = language == AppLanguage.Romanian ? "DOVEZI ȘI PAȘI URMĂTORI" : "EVIDENCE & NEXT STEPS";
             footerLabel.Text = Localization.Get(language, "Footer");
             latencyChart.Language = language;
@@ -2591,6 +2624,7 @@ namespace NetworkMonitorApp
             grid.Columns[6].HeaderText = Localization.Get(language, "GridDNS");
             grid.Columns[7].HeaderText = Localization.Get(language, "State");
             grid.Columns[8].HeaderText = Localization.Get(language, "Events");
+            RebuildSampleGrid(copy);
             if (samples.Count == 0)
             {
                 ResetMetrics();
@@ -2598,13 +2632,78 @@ namespace NetworkMonitorApp
             }
             else
             {
-                List<Sample> copy;
-                lock (samplesGate) copy = new List<Sample>(samples);
                 UpdateMetricValues(copy[copy.Count - 1]);
-                if (!monitoring)
-                    diagnosisBox.Text = DiagnosticEngine.Analyze(copy, language) + Environment.NewLine + Environment.NewLine +
-                    (language == AppLanguage.Romanian ? "Raport salvat local: " : "Report saved locally: ") + CsvLogger.ReportPath;
+                if (reportPreparing) diagnosisBox.Text = Localization.Get(language, "ReportPreparing");
+                else if (reportReady) diagnosisBox.Text = BuildLocalizedReport(copy);
+                else if (!monitoring) diagnosisBox.Text = DiagnosticEngine.Analyze(copy, language) + Environment.NewLine + Environment.NewLine +
+                    Localization.Get(language, "AIDataNotice") + Environment.NewLine + Localization.Get(language, "ReportSavedLocally") + CsvLogger.ReportPath;
             }
+            Invalidate(true);
+            if (IsHandleCreated) Update();
+        }
+
+        private void RebuildSampleGrid(IList<Sample> values)
+        {
+            if (grid == null) return;
+            grid.SuspendLayout();
+            try
+            {
+                grid.Rows.Clear();
+                foreach (object[] row in FormatSampleGridRows(values, language)) grid.Rows.Add(row);
+            }
+            finally { grid.ResumeLayout(); }
+        }
+
+        internal static List<object[]> FormatSampleGridRows(IList<Sample> values, AppLanguage language)
+        {
+            List<object[]> rows = new List<object[]>();
+            if (values == null) return rows;
+            int first = Math.Max(0, values.Count - 1000);
+            for (int i = values.Count - 1; i >= first; i--) rows.Add(FormatSampleGridRow(values[i], language));
+            return rows;
+        }
+
+        internal static object[] FormatSampleGridRow(Sample sample, AppLanguage language)
+        {
+            string gateway = FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
+            string internet = FormatInternetProbe(sample, language);
+            string signal = sample.WifiSignalPercent.HasValue
+                ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) + "%"
+                : Localization.Get(language, "NoValue");
+            string noReply = Localization.Get(language, "IcmpNoReply");
+            string[] events = (sample.Events ?? String.Empty).Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(delegate(string code) { return Localization.Event(language, code); }).ToArray();
+            return new object[]
+            {
+                sample.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture),
+                Localization.Status(language, sample.WifiState),
+                signal,
+                gateway + " / " + noReply + Format(sample.GatewayLossPct) + "%",
+                internet + " / IPv4 " + noReply + Format(sample.InternetLossPct) + "%",
+                NetworkProbe.FormatInternetTargets(sample.InternetTargetResults, sample.Ipv6TargetResults, language),
+                Localization.Status(language, sample.DnsStatus),
+                Localization.Status(language, sample.Connectivity),
+                String.Join("; ", events)
+            };
+        }
+
+        private string BuildLocalizedReport(IList<Sample> values)
+        {
+            string report = DiagnosticEngine.Analyze(values, language);
+            if (reportAiAttempted)
+            {
+                if (reportAiFailed)
+                    report += Environment.NewLine + Localization.Get(language, "AIFailedPrefix") + Localization.Get(language, "AIExplanationError");
+                else if (!String.IsNullOrWhiteSpace(reportAiExplanation))
+                {
+                    report += Environment.NewLine + Localization.Get(language, "AIExplanationHeader") + " (" + reportAiProvider + ")";
+                    if (reportAiLanguage != language)
+                        report += " " + Localization.Format(language, "AIExplanationLanguageNote", Localization.Get(reportAiLanguage, reportAiLanguage == AppLanguage.Romanian ? "Romanian" : "English"));
+                    report += Environment.NewLine + reportAiExplanation;
+                }
+            }
+            else report += Environment.NewLine + Localization.Get(language, "AIDataNotice");
+            return report + Environment.NewLine + Environment.NewLine + Localization.Get(language, "ReportSavedLocally") + CsvLogger.ReportPath;
         }
 
         private static GlassButton CreateToolbarButton(string text, int width)
@@ -2704,6 +2803,7 @@ namespace NetworkMonitorApp
             DialogResult consent = MessageBox.Show(this, Localization.Get(language, "AIConsentPrompt"),
                 Localization.Get(language, "AIConsentTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (consent != DialogResult.Yes) return;
+            aiSignInInProgress = true;
             aiButton.Enabled = false;
             disconnectAiButton.Enabled = false;
             aiStatusLabel.Text = Localization.Get(language, "AISigningIn");
@@ -2715,6 +2815,7 @@ namespace NetworkMonitorApp
                 catch (Exception exception) { message = exception.Message; }
                 SafeBeginInvoke(delegate
                 {
+                    aiSignInInProgress = false;
                     aiButton.Enabled = true;
                     disconnectAiButton.Enabled = ChatGptPlanClient.IsConnected;
                     aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
@@ -2743,19 +2844,21 @@ namespace NetworkMonitorApp
 
         private void DisconnectAiClicked(object sender, EventArgs e)
         {
+            aiDisconnectInProgress = true;
             aiButton.Enabled = false;
             disconnectAiButton.Enabled = false;
-            aiStatusLabel.Text = Localization.Get(language, "Stopping");
+            aiStatusLabel.Text = Localization.Get(language, "AIDisconnecting");
             ThreadPool.QueueUserWorkItem(delegate
             {
-                string message;
-                try { ChatGptPlanClient.Disconnect(); message = Localization.Get(language, "AIDisconnectSuccess"); }
-                catch { message = Localization.Get(language, "AIRevocationNote"); }
+                bool disconnected = true;
+                try { ChatGptPlanClient.Disconnect(); }
+                catch { disconnected = false; }
                 SafeBeginInvoke(delegate
                 {
+                    aiDisconnectInProgress = false;
                     aiButton.Enabled = true;
                     aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
-                    MessageBox.Show(this, message, Localization.Get(language, "DisconnectChatGPT"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    MessageBox.Show(this, Localization.Get(language, disconnected ? "AIDisconnectSuccess" : "AIRevocationNote"), Localization.Get(language, "DisconnectChatGPT"), MessageBoxButtons.OK, MessageBoxIcon.Information);
                 });
             });
         }
@@ -2763,6 +2866,12 @@ namespace NetworkMonitorApp
         private void StartMonitoring()
         {
             lock (samplesGate) samples.Clear();
+            reportPreparing = false;
+            reportReady = false;
+            reportAiAttempted = false;
+            reportAiFailed = false;
+            reportAiExplanation = null;
+            reportAiProvider = null;
             grid.Rows.Clear();
             latencyChart.SetSamples(new List<Sample>());
             diagnosisBox.Clear();
@@ -2775,9 +2884,7 @@ namespace NetworkMonitorApp
             startStopButton.BackColor = LiquidGlassTheme.Sapphire;
             statusLabel.ForeColor = LiquidGlassTheme.Good;
             statusLabel.Text = Localization.Get(language, "Running");
-            overviewSummary.Text = language == AppLanguage.Romanian
-                ? "Probează gateway-ul, DNS-ul, HTTPS și ținte IPv4/IPv6. Lasă aplicația pornită cât timp observi problema."
-                : "Checking your gateway, DNS, HTTPS, and IPv4/IPv6 targets. Keep the app running while the issue occurs.";
+            overviewSummary.Text = Localization.Get(language, "ActiveMonitoringSummary");
             ShowMonitorView();
             timer = new System.Threading.Timer(SampleTick, null, 0, 5000);
         }
@@ -2786,6 +2893,12 @@ namespace NetworkMonitorApp
         {
             monitoring = false;
             awaitingInitialSample = false;
+            reportPreparing = true;
+            reportReady = false;
+            reportAiAttempted = false;
+            reportAiFailed = false;
+            reportAiExplanation = null;
+            reportAiProvider = null;
             if (timer != null)
             {
                 timer.Dispose();
@@ -2794,7 +2907,7 @@ namespace NetworkMonitorApp
             startStopButton.Enabled = false;
             statusLabel.Text = Localization.Get(language, "Stopping");
             statusLabel.ForeColor = LiquidGlassTheme.MutedText;
-            overviewSummary.Text = language == AppLanguage.Romanian ? "Pregătesc raportul din măsurătorile sesiunii…" : "Preparing your session report from the captured measurements…";
+            overviewSummary.Text = Localization.Get(language, "ReportPreparing");
 
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -2812,19 +2925,22 @@ namespace NetworkMonitorApp
                 AiProviderSettings alternativeProvider = AiProviderClient.Load();
                 bool explainWithAlternative = alternativeProvider.Provider != AiProvider.None;
                 bool explainWithChatGpt = !explainWithAlternative && ChatGptPlanClient.IsConnected;
+                string explanation = null;
+                string providerName = null;
+                bool explanationFailed = false;
                 if (explainWithChatGpt || explainWithAlternative)
                 {
-                    SafeBeginInvoke(delegate { aiStatusLabel.Text = Localization.Get(reportLanguage, "AIAnalyzingStatus"); });
+                    SafeBeginInvoke(delegate { aiAnalysisInProgress = true; aiStatusLabel.Text = Localization.Get(language, "AIAnalyzingStatus"); });
                     try
                     {
-                        string explanation = explainWithChatGpt ? ChatGptPlanClient.Explain(copy, reportLanguage) : AiProviderClient.Explain(copy, reportLanguage);
-                        string providerName = explainWithChatGpt ? "ChatGPT" : alternativeProvider.Provider.ToString();
+                        explanation = explainWithChatGpt ? ChatGptPlanClient.Explain(copy, reportLanguage) : AiProviderClient.Explain(copy, reportLanguage);
+                        providerName = explainWithChatGpt ? "ChatGPT" : alternativeProvider.Provider.ToString();
                         report += Environment.NewLine + Localization.Format(reportLanguage, "AIExplanationHeader") + " (" + providerName + ")" + Environment.NewLine + explanation;
                     }
-                    catch (Exception exception)
+                    catch
                     {
-                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIFailedPrefix") +
-                            (reportLanguage == AppLanguage.Romanian ? Localization.Get(reportLanguage, "AIExplanationError") : exception.Message);
+                        explanationFailed = true;
+                        report += Environment.NewLine + Localization.Get(reportLanguage, "AIFailedPrefix") + Localization.Get(reportLanguage, "AIExplanationError");
                     }
                 }
                 else
@@ -2833,19 +2949,18 @@ namespace NetworkMonitorApp
 
                 SafeBeginInvoke(delegate
                 {
-                    diagnosisBox.Text = report + Environment.NewLine + (reportLanguage == AppLanguage.Romanian ? "Raport salvat local: " : "Report saved locally: ") + CsvLogger.ReportPath;
-                    statusLabel.Text = reportLanguage == AppLanguage.Romanian ? "Sesiune analizată" : "Session analyzed";
-                    statusLabel.ForeColor = LiquidGlassTheme.Sapphire;
-                    overviewSummary.Text = reportLanguage == AppLanguage.Romanian
-                        ? String.Format(CultureInfo.GetCultureInfo("ro-RO"), "Raport pregătit din {0} măsurători. Vezi concluzia și pașii următori.", copy.Count)
-                        : String.Format(CultureInfo.GetCultureInfo("en-US"), "Report ready from {0} samples. Review the findings and next steps.", copy.Count);
-                    startStopButton.Text = Localization.Get(language, "Restart");
-                    startStopButton.BackColor = LiquidGlassTheme.Sapphire;
-                    startStopButton.ForeColor = Color.FromArgb(9, 15, 24);
+                    reportPreparing = false;
+                    reportReady = true;
+                    reportAiAttempted = explainWithAlternative || explainWithChatGpt;
+                    reportAiFailed = explanationFailed;
+                    reportAiExplanation = explanation;
+                    reportAiProvider = providerName;
+                    reportAiLanguage = reportLanguage;
+                    aiAnalysisInProgress = false;
                     startStopButton.Enabled = true;
                     copyReportButton.Enabled = true;
                     ShowReportView();
-                    aiStatusLabel.Text = Localization.Get(language, CurrentAiStatusKey());
+                    ApplyLanguage();
                 });
             });
         }
@@ -2904,14 +3019,7 @@ namespace NetworkMonitorApp
             UpdateMetricValues(sample);
             statusLabel.Text = ConnectivityLabel(sample.Connectivity, language);
             overviewSummary.Text = NextStepSummary(sample, language);
-
-            string gateway = FormatProbe(sample.GatewayLatencyMs, sample.GatewayPingStatus, language);
-            string internet = FormatInternetProbe(sample, language);
-            string signal = sample.WifiSignalPercent.HasValue ? sample.WifiSignalPercent.Value.ToString(CultureInfo.InvariantCulture) + "%" : Localization.Get(language, "NoValue");
-            string noReply = language == AppLanguage.Romanian ? "fara raspuns ICMP " : "ICMP no reply ";
-            grid.Rows.Insert(0, sample.Timestamp.ToString("HH:mm:ss", CultureInfo.InvariantCulture), Localization.Status(language, sample.WifiState), signal,
-                gateway + " / " + noReply + Format(sample.GatewayLossPct) + "%", internet + " / IPv4 " + noReply + Format(sample.InternetLossPct) + "%",
-                NetworkProbe.FormatInternetTargets(sample.InternetTargetResults, sample.Ipv6TargetResults, language), Localization.Status(language, sample.DnsStatus), Localization.Status(language, sample.Connectivity), String.Join("; ", sample.Events.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries).Select(delegate(string code) { return Localization.Event(language, code); }).ToArray()));
+            grid.Rows.Insert(0, FormatSampleGridRow(sample, language));
             if (grid.Rows.Count > 1000) grid.Rows.RemoveAt(grid.Rows.Count - 1);
             List<Sample> chartSamples;
             lock (samplesGate) chartSamples = new List<Sample>(samples);
@@ -2989,6 +3097,7 @@ namespace NetworkMonitorApp
             DialogResult confirmation = MessageBox.Show(this, Localization.Get(language, "RouteTraceConfirmPrompt"),
                 Localization.Get(language, "RouteTraceConfirmTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (confirmation != DialogResult.Yes) return;
+            routeTraceInProgress = true;
             routeTraceButton.Enabled = false;
             statusLabel.Text = Localization.Get(language, "RouteTraceRunning");
             ThreadPool.QueueUserWorkItem(delegate
@@ -2998,8 +3107,9 @@ namespace NetworkMonitorApp
                 catch (Exception) { result = Localization.Get(language, "RouteTraceError"); }
                 SafeBeginInvoke(delegate
                 {
+                    routeTraceInProgress = false;
                     routeTraceButton.Enabled = true;
-                    statusLabel.Text = Localization.Get(language, monitoring ? "Running" : "Stopped");
+                    ApplyLanguage();
                     ShowRouteTraceResult(result);
                 });
             });
@@ -3560,6 +3670,39 @@ namespace NetworkMonitorApp
                 Localization.Get(AppLanguage.Romanian, "ContinueChatGPT") == "Continuă cu ChatGPT" &&
                 Localization.Get(AppLanguage.Romanian, "DisconnectChatGPT") == "Deconectează ChatGPT";
             results.Add((toolbarLabelsRomanian ? "PASS" : "FAIL") + " | Romanian toolbar action labels | " + (toolbarLabelsRomanian ? "all visible actions have Romanian labels" : "one or more toolbar labels are untranslated"));
+            Sample localizedRowSample = BaseSample();
+            localizedRowSample.WifiState = "Disconnected";
+            localizedRowSample.DnsStatus = "Failed";
+            localizedRowSample.Connectivity = "Degraded";
+            localizedRowSample.Events = "WiFiDisconnected;DNSFailure";
+            List<object[]> englishGridRows = MainForm.FormatSampleGridRows(new List<Sample> { localizedRowSample }, AppLanguage.English);
+            List<object[]> romanianGridRows = MainForm.FormatSampleGridRows(new List<Sample> { localizedRowSample }, AppLanguage.Romanian);
+            bool historicalGridRowsRelocalize = englishGridRows.Count == 1 && romanianGridRows.Count == 1 &&
+                Convert.ToString(englishGridRows[0][1]) == "Disconnected" && Convert.ToString(romanianGridRows[0][1]) == "Deconectat" &&
+                Convert.ToString(englishGridRows[0][8]).Contains("DNS failure") && Convert.ToString(romanianGridRows[0][8]).Contains("Esec DNS") &&
+                Convert.ToString(englishGridRows[0][8]) != Convert.ToString(romanianGridRows[0][8]);
+            results.Add((historicalGridRowsRelocalize ? "PASS" : "FAIL") + " | historical activity rows relocalize | " + (historicalGridRowsRelocalize ? "existing samples can be rendered in either selected language" : "sample rows retain their original language"));
+            bool customControlsInvalidateOnLocalizationChange = false;
+            try
+            {
+                bool buttonInvalidated = false;
+                bool chartInvalidated = false;
+                using (GlassButton button = new GlassButton())
+                {
+                    IntPtr buttonHandle = button.Handle;
+                    button.Invalidated += delegate { buttonInvalidated = true; };
+                    button.Text = Localization.Get(AppLanguage.Romanian, "OpenLogs");
+                }
+                using (LatencyChartPanel chart = new LatencyChartPanel())
+                {
+                    IntPtr chartHandle = chart.Handle;
+                    chart.Invalidated += delegate { chartInvalidated = true; };
+                    chart.Language = AppLanguage.Romanian;
+                }
+                customControlsInvalidateOnLocalizationChange = buttonInvalidated && chartInvalidated;
+            }
+            catch { customControlsInvalidateOnLocalizationChange = false; }
+            results.Add((customControlsInvalidateOnLocalizationChange ? "PASS" : "FAIL") + " | instant custom-control localization repaint | " + (customControlsInvalidateOnLocalizationChange ? "button text and chart invalidate immediately" : "a custom control did not request repaint"));
             bool updateManifestValid = false;
             bool updateManifestRejectsBadHash = false;
             try

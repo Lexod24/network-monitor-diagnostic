@@ -24,6 +24,15 @@ namespace NetworkMonitorApp
                 case "Stopped": return ro ? "Oprit - datele raman locale" : "Stopped - data stays local";
                 case "Running": return ro ? "Ruleaza - colecteaza probe locale" : "Running - collecting local probes";
                 case "Stopping": return ro ? "Oprire si analiza..." : "Stopping and analyzing...";
+                case "AIDisconnecting": return ro ? "Deconectez ChatGPT..." : "Disconnecting ChatGPT...";
+                case "IcmpNoReply": return ro ? "fără răspuns ICMP " : "ICMP no reply ";
+                case "SessionAnalyzed": return ro ? "Sesiune analizată" : "Session analyzed";
+                case "ReportPreparing": return ro ? "Pregătesc raportul sesiunii..." : "Preparing the session report...";
+                case "InitialMonitoringSummary": return ro ? "Pornește monitorizarea când apare problema. Diagnosticul local nu necesită cont sau cheie AI." : "Start monitoring when the issue happens. Local diagnosis needs no account or AI key.";
+                case "ActiveMonitoringSummary": return ro ? "Probează gateway-ul, DNS-ul, HTTPS și țintele IPv4/IPv6. Lasă aplicația pornită cât timp observi problema." : "Checking your gateway, DNS, HTTPS, and IPv4/IPv6 targets. Keep the app running while the issue occurs.";
+                case "MonitoringSummary": return ro ? "Monitorizarea rulează. Las-o activă până când apare sau trece problema." : "Monitoring is running. Leave it active until the issue appears or passes.";
+                case "SessionStoppedSummary": return ro ? "Sesiune oprită. Deschide diagnosticul pentru dovezi și pașii următori." : "Session stopped. Open Diagnosis for evidence and next steps.";
+                case "SessionReportReadySummary": return ro ? "Raport pregătit din {0} măsurători. Vezi constatările și pașii următori." : "Report ready from {0} samples. Review the findings and next steps.";
                 case "OpenLogs": return ro ? "Deschide jurnalele" : "Open logs";
                 case "CopyReport": return ro ? "Copiază diagnosticul" : "Copy diagnosis";
                 case "RouteTraceButton": return ro ? "Testează ruta" : "Trace route";
@@ -139,6 +148,7 @@ namespace NetworkMonitorApp
                 case "AIAnalyzingStatus": return ro ? "AI analizeaza sumarul masuratorilor..." : "AI is analyzing the measurement summary...";
                 case "AIFailedPrefix": return ro ? "Explicatia AI nu a putut fi obtinuta; raportul local ramane disponibil. Detalii: " : "AI explanation was unavailable; the local report is still available. Details: ";
                 case "AIExplanationHeader": return ro ? "EXPLICATIE AI - interpretare suplimentara" : "AI EXPLANATION - supplementary interpretation";
+                case "AIExplanationLanguageNote": return ro ? "(generată în {0})" : "(generated in {0})";
                 case "AIRevocationNote": return ro ? "Deconectat local. Revocarea la distanta nu a putut fi confirmata; poti revoca accesul in setarile ChatGPT." : "Signed out locally. Remote revocation could not be confirmed; you can revoke access in ChatGPT settings.";
                 case "ProbeError": return ro ? "Monitorul a intampinat o eroare la colectarea acestei probe." : "The monitor encountered an error while collecting this sample.";
                 default: return key;
