@@ -32,18 +32,20 @@ The provider selected in **AI options** is used for explanation after monitoring
 ## Measurements and diagnosis
 
 - Wi-Fi connection state and Windows-reported signal strength when available.
-- ICMP latency and rolling packet loss to the local gateway and `1.1.1.1`.
+- ICMP latency and rolling loss to the gateway and three independent external IP targets (Cloudflare, Google, and Quad9). The report uses the median of replying targets and distinguishes a filtered/single-target response from a broad reachability outage.
+- The active Windows route interface is selected for the external probe and passive traffic counters. Interface IDs are used only in memory; logs store only a broad type (Wi-Fi, Ethernet, or other). Route changes are marked as events.
 - Live latency graph for the latest 60 samples (about five minutes), plus successful-probe minimum, median, p95, maximum, and gap-aware jitter in the final report.
-- Passive upload/download rates from the active gateway interface. They represent this computer's current traffic, not an Internet speed test or the plan's maximum bandwidth.
-- If the Internet ICMP probe does not reply, three concurrent HTTPS checks to Microsoft, Google, and Cloudflare. The app validates expected endpoint responses and rejects redirects or captive portal pages.
+- Passive upload/download rates from the active route interface. The report compares quiet samples (<0.25 Mbps) with active samples (>=1 Mbps) only when it has at least three of each. This is an observation of this PC's traffic, not a controlled bufferbloat or speed test; it does not include other devices and generates no traffic.
+- When fewer than two external IP targets reply, three concurrent HTTPS checks to Microsoft, Google, and Cloudflare. The app validates expected endpoint responses and rejects redirects or captive portal pages.
 - DNS lookups once a minute for three domains using the configured Windows resolver.
-- CSV events with per-endpoint results, timestamps, and rotation at 10 MB (up to 10 rotated files).
+- An optional **Trace route** button. After confirmation, Windows `tracert` sends a small number of ICMP TTL probes to `1.1.1.1`, up to eight hops, with a 12-second safety limit. Hop IPs appear in a local dialog only; the trace is not saved, logged, or sent to AI. Routers may hide hops or ignore traceroute.
+- CSV events with per-target and per-endpoint results, timestamps, and rotation at 10 MB (up to 10 rotated files). External target IP addresses, SSIDs, BSSIDs, adapter names, and interface IDs are not saved.
 
-The report compares gateway, Internet, HTTPS, and DNS evidence and distinguishes measured facts from likely causes. The latency graph is a live view of the most recent 60 samples; session CSV files are the source for longer-term review. It does not claim to prove ISP or hardware faults. ICMP may be filtered or rate-limited, Wi-Fi signal may be unavailable, and DNS may use the Windows cache. Firewalls, proxies, captive portals, regional routing, or endpoint incidents can affect results.
+The report compares gateway, Internet, HTTPS, and DNS evidence, suggests the first likely affected segment, and labels confidence and limits. It avoids inferring an ISP or hardware fault from one check. ICMP may be filtered or rate-limited, Wi-Fi signal may be unavailable, and DNS may use the Windows cache. Firewalls, VPNs, proxies, captive portals, regional routing, or endpoint incidents can affect results. A few public probe services cannot represent every game or website; use **Trace route** during the issue for a route snapshot.
 
 ## Build and test
 
-Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`. Run `tests\run-self-tests.ps1` for deterministic diagnosis, OAuth validation, and AI request privacy tests. The GitHub Actions workflow builds the app and runs the same suite on Windows.
+Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`. Run `tests\run-self-tests.ps1` for deterministic target aggregation, segment diagnosis, passive load comparison, route-trace bounds, CSV privacy/schema migration, chart rendering, OAuth validation, and AI request privacy tests. The GitHub Actions workflow builds the app and runs the same suite on Windows.
 
 ## License
 

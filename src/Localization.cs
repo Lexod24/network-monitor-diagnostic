@@ -25,6 +25,10 @@ namespace NetworkMonitorApp
                 case "Stopping": return ro ? "Oprire si analiza..." : "Stopping and analyzing...";
                 case "OpenLogs": return ro ? "Deschide logurile" : "Open logs";
                 case "CopyReport": return ro ? "Copiaza diagnosticul" : "Copy diagnosis";
+                case "RouteTraceButton": return ro ? "Testeaza ruta" : "Trace route";
+                case "RouteTraceConfirmTitle": return ro ? "Test de ruta" : "Route trace";
+                case "RouteTraceConfirmPrompt": return ro ? "Testul trimite probe ICMP cu volum redus catre 1.1.1.1. Routerele intermediare pot aparea ca adrese IP. Rezultatul este afisat doar pe acest calculator; nu este salvat sau trimis. Unele routere nu raspund la aceste probe. Continui?" : "This sends a small number of ICMP TTL probes to 1.1.1.1. Intermediate routers may appear as IP addresses. Results are shown only on this PC and are not saved or sent. Some routers do not reply. Continue?";
+                case "RouteTraceRunning": return ro ? "Se testeaza ruta..." : "Tracing route...";
                 case "ContinueChatGPT": return "Continue with ChatGPT";
                 case "AISettings": return ro ? "Setari AI" : "AI options";
                 case "LatencyChartTitle": return ro ? "Latență (ms) - ultimele 60 de esantioane" : "Latency (ms) - latest 60 samples";
@@ -39,8 +43,8 @@ namespace NetworkMonitorApp
                 case "AIAnalyzing": return ro ? "AI analizeaza sumarul masuratorilor..." : "AI is analyzing the measurement summary...";
                 case "AIUnavailable": return ro ? "AI indisponibil; afisez analiza locala." : "AI unavailable; showing local analysis.";
                 case "NoSamples": return ro ? "Nu exista masuratori suficiente pentru diagnostic." : "There are not enough measurements for a diagnosis.";
-                case "InitialDiagnosis": return ro ? "Apasa Porneste monitorizarea. Dupa oprire, aplicatia va afisa constatarile, dovezile si pasii urmatori." : "Press Start monitoring. After you stop, the app will show findings, evidence, and next steps.";
-                case "Footer": return ro ? "Probe la 5 sec | DNS la 60 sec | Fara SSID, BSSID, IP-uri sau parole | Fara administrator" : "Probes every 5 sec | DNS every 60 sec | No SSID, BSSID, IP addresses, or passwords saved | No admin needed";
+                case "InitialDiagnosis": return ro ? "Apasa Porneste monitorizarea. Compara mai multe tinte si ruleaza cat apare problema. Comparatia de trafic este pasiva; aplicatia nu genereaza trafic." : "Press Start monitoring. Multiple targets are compared; keep it running while the issue occurs. Traffic comparison is passive; the app does not generate traffic.";
+                case "Footer": return ro ? "Tinte independente la 5 sec | DNS la 60 sec | Fara IP-uri/SSID salvate | Fara administrator" : "Independent targets every 5 sec | DNS every 60 sec | No IPs/SSID saved | No admin needed";
                 case "MetricWifi": return ro ? "Wi-Fi" : "Wi-Fi";
                 case "MetricSignal": return ro ? "Semnal" : "Signal";
                 case "MetricGateway": return ro ? "Gateway" : "Gateway";
@@ -62,6 +66,7 @@ namespace NetworkMonitorApp
                 case "GridSignal": return ro ? "Semnal" : "Signal";
                 case "GridGateway": return "Gateway";
                 case "GridInternet": return "Internet";
+                case "GridTargets": return ro ? "Tinte externe" : "External targets";
                 case "GridDNS": return "DNS";
                 case "DiagnosisGroup": return ro ? "Diagnostic - constatari, dovezi si limite" : "Diagnosis - findings, evidence, and limits";
                 case "ReportTitle": return ro ? "DIAGNOSTIC LOCAL - Reguli transparente" : "LOCAL DIAGNOSIS - Transparent rules";
@@ -96,6 +101,8 @@ namespace NetworkMonitorApp
                 case "WiFiDisconnected": return ro ? "Wi-Fi deconectat" : "Wi-Fi disconnected";
                 case "WeakWiFiSignal": return ro ? "Semnal Wi-Fi slab" : "Weak Wi-Fi signal";
                 case "GatewayUnreachable": return ro ? "Gateway fara raspuns" : "Gateway did not respond";
+                case "InternetTargetDisagreement": return ro ? "Tinte Internet cu raspunsuri diferite" : "Internet targets disagree";
+                case "ActiveRouteChanged": return ro ? "Ruta de retea a trecut pe alta interfata" : "Windows switched the active route interface";
                 case "ICMPUnavailableHTTPSOk": return ro ? "Ping filtrat, HTTPS reusit" : "Ping unavailable, HTTPS succeeded";
                 case "InternetOutage": return ro ? "Probe Internet neconcludente" : "Internet probes inconclusive";
                 case "InternetOutageSuspected": return ro ? "Intrerupere Internet suspectata" : "Internet interruption suspected";
@@ -121,6 +128,7 @@ namespace NetworkMonitorApp
             if (status == "Outage") return ro ? "Intrerupere suspectata" : "Outage suspected";
             if (status == "OutageSuspected") return Get(language, "OutageSuspected");
             if (status == "AllFailed") return ro ? "Toate probele au esuat" : "All probes failed";
+            if (status == "Partial") return ro ? "Raspuns partial" : "Partial response";
             if (status == "Success") return ro ? "Reusit" : "Success";
             if (status == "NotChecked") return ro ? "Neverificat" : "Not checked";
             if (status == "NotNeeded") return ro ? "Nefolosit" : "Not needed";
