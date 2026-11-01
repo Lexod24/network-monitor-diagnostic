@@ -2279,6 +2279,8 @@ namespace NetworkMonitorApp
         private volatile bool monitoring;
         private bool awaitingInitialSample;
         private DateTimeOffset nextDnsCheck;
+        private bool updateCheckStarted;
+        private bool updateInstallStarted;
 
         public MainForm()
         {
@@ -2460,8 +2462,75 @@ namespace NetworkMonitorApp
             ApplyLanguage();
             LiquidGlassTheme.ApplyTree(this, startStopButton);
             GlassWindowEffects.Attach(this, false);
-            Shown += delegate { GlassWindowEffects.ApplyDarkScrollbars(this); };
+            Shown += delegate { GlassWindowEffects.ApplyDarkScrollbars(this); CheckForUpdatesOnStartup(); };
             ShowMonitorView();
+        }
+
+        private void CheckForUpdatesOnStartup()
+        {
+            if (updateCheckStarted) return;
+            updateCheckStarted = true;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                UpdateManifest update;
+                try { update = AutoUpdater.CheckForUpdate(); }
+                catch { return; }
+                if (update == null) return;
+                SafeBeginInvoke(delegate { OfferUpdate(update); });
+            });
+        }
+
+        private void OfferUpdate(UpdateManifest update)
+        {
+            if (IsDisposed || update == null) return;
+            if (monitoring)
+            {
+                MessageBox.Show(this, Localization.Get(language, "UpdateDuringMonitoring"), Localization.Get(language, "UpdateAvailableTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            string prompt = Localization.Format(language, "UpdateAvailablePrompt", update.Version.ToString());
+            if (MessageBox.Show(this, prompt, Localization.Get(language, "UpdateAvailableTitle"), MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+            if (updateInstallStarted) return;
+            updateInstallStarted = true;
+            startStopButton.Enabled = false;
+            statusLabel.Text = Localization.Get(language, "UpdateStarting");
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    string staged = AutoUpdater.DownloadAndExtract(update);
+                    SafeBeginInvoke(delegate
+                    {
+                        if (IsDisposed) return;
+                        MessageBox.Show(this, Localization.Get(language, "UpdateReady"), Localization.Get(language, "UpdateAvailableTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        try
+                        {
+                            AutoUpdater.StartApplyAndExit(staged, Process.GetCurrentProcess().Id, Application.ExecutablePath);
+                            Close();
+                        }
+                        catch (Exception ex)
+                        {
+                            updateInstallStarted = false;
+                            startStopButton.Enabled = true;
+                            ApplyLanguage();
+                            MessageBox.Show(this, Localization.Format(language, "UpdateFailed", ex.Message), Localization.Get(language, "UpdateAvailableTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                    });
+                }
+                catch (Exception ex)
+                {
+                    SafeBeginInvoke(delegate
+                    {
+                        if (IsDisposed) return;
+                        updateInstallStarted = false;
+                        startStopButton.Enabled = true;
+                        ApplyLanguage();
+                        MessageBox.Show(this, Localization.Format(language, "UpdateFailed", ex.Message), Localization.Get(language, "UpdateAvailableTitle"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    });
+                }
+            });
         }
 
         private void LanguageChanged(object sender, EventArgs e)
@@ -3484,6 +3553,30 @@ namespace NetworkMonitorApp
                 Localization.Get(AppLanguage.Romanian, "NoValue") == "—" &&
                 Localization.Get(AppLanguage.Romanian, "MetricHeading") != Localization.Get(AppLanguage.English, "MetricHeading");
             results.Add((romanianUi ? "PASS" : "FAIL") + " | Romanian UI labels | " + (romanianUi ? "previously hardcoded controls now have Romanian labels" : "one or more Romanian labels are missing"));
+            bool toolbarLabelsRomanian = Localization.Get(AppLanguage.Romanian, "RouteTraceButton") == "Testează ruta" &&
+                Localization.Get(AppLanguage.Romanian, "OpenLogs") == "Deschide jurnalele" &&
+                Localization.Get(AppLanguage.Romanian, "CopyReport") == "Copiază diagnosticul" &&
+                Localization.Get(AppLanguage.Romanian, "AISettings") == "Setări AI" &&
+                Localization.Get(AppLanguage.Romanian, "ContinueChatGPT") == "Continuă cu ChatGPT" &&
+                Localization.Get(AppLanguage.Romanian, "DisconnectChatGPT") == "Deconectează ChatGPT";
+            results.Add((toolbarLabelsRomanian ? "PASS" : "FAIL") + " | Romanian toolbar action labels | " + (toolbarLabelsRomanian ? "all visible actions have Romanian labels" : "one or more toolbar labels are untranslated"));
+            bool updateManifestValid = false;
+            bool updateManifestRejectsBadHash = false;
+            try
+            {
+                UpdateManifest parsedUpdate = AutoUpdater.ParseManifest("{\"version\":\"1.2.3\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
+                updateManifestValid = parsedUpdate.Version == new Version(1, 2, 3) && parsedUpdate.Sha256.Length == 64;
+                try { AutoUpdater.ParseManifest("{\"version\":\"1.2.3\",\"sha256\":\"not-a-hash\"}"); }
+                catch (InvalidDataException) { updateManifestRejectsBadHash = true; }
+            }
+            catch { }
+            bool updateMetadataValidation = updateManifestValid && updateManifestRejectsBadHash;
+            results.Add((updateMetadataValidation ? "PASS" : "FAIL") + " | updater manifest validation | " + (updateMetadataValidation ? "semantic version and SHA-256 checked; malformed hash rejected" : "manifest validation mismatch"));
+            byte[] hashInput = Encoding.ASCII.GetBytes("abc");
+            string knownHash;
+            using (MemoryStream hashStream = new MemoryStream(hashInput)) knownHash = AutoUpdater.ComputeSha256(hashStream);
+            bool updateHashCorrect = knownHash == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+            results.Add((updateHashCorrect ? "PASS" : "FAIL") + " | updater SHA-256 verification | " + (updateHashCorrect ? "matches the published standard test vector" : "SHA-256 mismatch"));
             string[] untranslatedReportLabels = new string[] { "gateway", " median ", "jitter", "n/a", "success/attempts", "no successful samples" }
                 .Where(delegate(string englishText) { return romanianReport.IndexOf(englishText, StringComparison.OrdinalIgnoreCase) >= 0; }).ToArray();
             bool romanianReportLocalized = untranslatedReportLabels.Length == 0;
@@ -3710,6 +3803,8 @@ namespace NetworkMonitorApp
         private static int Main(string[] args)
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
+            if (args.Length > 0 && String.Equals(args[0], "--apply-update", StringComparison.OrdinalIgnoreCase))
+                return AutoUpdater.ApplyStagedUpdate(args);
             if (args.Length > 0 && String.Equals(args[0], "--self-test", StringComparison.OrdinalIgnoreCase))
             {
                 string outputPath = args.Length > 1 ? args[1] : null;

@@ -2,6 +2,8 @@ NETWORK MONITOR DIAGNOSTIC
 
 Start: Double-click NetworkMonitor.exe. No installation or administrator rights are required.
 
+The app checks for a newer version at startup. It will notify you, ask before downloading, show the download and verification status, verify the package SHA-256, and restart to install. It will not update during an active monitoring session. Update checks send no diagnostics, CSV, Wi-Fi name, IP addresses, credentials, or usage data.
+
 1. Click Start monitoring while the connection problem is happening.
 2. Leave the app running for the duration of the problem.
 3. Click Stop and analyze to view the report. CSV and report files are saved locally under:

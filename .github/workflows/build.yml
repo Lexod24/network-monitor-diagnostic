@@ -21,4 +21,5 @@ jobs:
           path: |
             dist/NetworkMonitor.exe
             dist/NetworkMonitor-Portable.zip
+            update.json
 

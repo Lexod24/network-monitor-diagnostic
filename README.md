@@ -10,6 +10,8 @@ If this app helps you, please star this repository. Questions, bugs or suggestio
 
 [Download the portable Windows app (.zip)](https://raw.githubusercontent.com/Lexod24/network-monitor-diagnostic/main/NetworkMonitor-Portable.zip). Extract the ZIP and double-click `NetworkMonitor.exe`. No administrator rights or installation are required. The app does not change Windows or router settings.
 
+The app checks the public GitHub update manifest at startup. If a newer version is available, it tells you, asks before downloading, shows a visible download/verification status, verifies the package SHA-256, and restarts to install it. It does not update during an active monitoring session. Update checks send no diagnostics, CSV, Wi-Fi name, IP addresses, credentials, or usage data.
+
 ## Use the app
 
 1. Select **Start monitoring** while the connection is behaving poorly.
@@ -50,7 +52,7 @@ The report compares gateway, IPv4, IPv6, HTTPS, and DNS evidence, suggests the f
 
 ## Build and test
 
-Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`. Run `tests\run-self-tests.ps1` for deterministic IPv4/IPv6 aggregation, endpoint/outage classification, Ethernet/Wi-Fi relevance, proxy/captive-portal heuristics, relative latency spikes, passive load comparison, route-trace bounds, CSV columns/privacy/schema migration, chart rendering, OAuth validation, and AI privacy tests. The GitHub Actions workflow builds the app and runs the suite on Windows. Automated tests cannot substitute for testing every adapter, VPN, Windows locale, router, or network.
+Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`, the portable ZIP, and the SHA-256 update manifest. Bump `AppVersion.Current` and the assembly version in `src\AppVersion.cs` when publishing a new version, then commit the generated ZIP and `update.json` together. Run `tests\run-self-tests.ps1` for deterministic IPv4/IPv6 aggregation, endpoint/outage classification, Ethernet/Wi-Fi relevance, proxy/captive-portal heuristics, relative latency spikes, passive load comparison, route-trace bounds, CSV columns/privacy/schema migration, chart rendering, OAuth validation, update manifest/hash validation, localization, and AI privacy tests. The GitHub Actions workflow builds the app and runs the suite on Windows. Automated tests cannot substitute for testing every adapter, VPN, Windows locale, router, or network.
 
 ## License
 
