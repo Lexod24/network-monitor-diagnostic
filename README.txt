@@ -9,6 +9,9 @@ The app checks for a newer version at startup. It will notify you, ask before do
 3. Click Stop and analyze to view the report. CSV and report files are saved locally under:
    %LOCALAPPDATA%\NetworkMonitor\Logs
 
+Speed test history:
+Open History to record results from a speed test service of your choice. Enter provider, connection type, download, upload, and ping; the app timestamps and charts each entry. History stays in this Windows user account under %LOCALAPPDATA%\NetworkMonitor. You can delete entries in the app or export CSV. The app does not run tests or import provider results automatically, and does not send history to AI.
+
 Optional AI explanation:
 The complete evidence-based local diagnosis is always available. Select AI options to configure local Ollama or a Gemini/Groq API key that you own. Continue with ChatGPT remains available for eligible ChatGPT accounts and requires separate approval. AI is supplementary. No shared key is included and the publisher does not pay for other users.
 Keep the app open while signing in. The local callback uses 127.0.0.1 port 1455 when available, or another free port, and waits up to 15 minutes.

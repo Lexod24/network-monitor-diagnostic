@@ -19,6 +19,10 @@ The app checks the public GitHub update manifest at startup. If a newer version 
 3. Select **Stop and analyze**. The window shows findings, evidence, limitations, and practical next steps. A CSV and a text report are saved locally under `%LOCALAPPDATA%\NetworkMonitor\Logs`.
 4. The local evidence-based diagnosis is always available. For an optional AI explanation, choose **AI options**. You can use local Ollama, Gemini API, or Groq API. **Continue with ChatGPT** remains available for eligible ChatGPT accounts; it opens the official sign-in and requests separate approval.
 
+## Speed test history
+
+Open **History** to keep a record of speed tests performed with a service of your choice. Add the provider, connection type, download, upload, and ping results; the app timestamps and charts the entries. Records persist on this Windows user account under `%LOCALAPPDATA%\NetworkMonitor`, can be deleted in the app, and can be exported as CSV. The app does not run a speed test or import results from third-party services automatically, and these history entries are not included in monitoring logs or sent to AI.
+
 AI is optional. Without it, the complete local diagnosis still works. AI output is supplemental and may be wrong; compare it with the measurements and deterministic local findings. No provider keys are bundled and the publisher does not pay for other users' requests. Cloud providers require each user to supply their own key and are subject to that provider's quotas, account eligibility, data terms, and possible charges. Keys are protected with Windows DPAPI for the current Windows user. Ollama runs on the user's own computer and requires a separately installed model.
 The sign-in callback listens on `127.0.0.1`, preferring port `1455` and selecting another available port if needed. Keep the app open and finish browser sign-in within 15 minutes.
 
