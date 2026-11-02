@@ -3286,11 +3286,9 @@ namespace NetworkMonitorApp
                 StopMonitoring();
         }
 
-        private async void LoadLatencyClicked(object sender, EventArgs e)
+        private void LoadLatencyClicked(object sender, EventArgs e)
         {
             if (loadLatencyInProgress || reportPreparing || updateInstallStarted) return;
-            if (MessageBox.Show(this, LoadLatencyTestPolicy.GetConfirmation(language), Localization.Get(language, "LoadTitle"),
-                MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
 
             loadLatencyInProgress = true;
             loadLatencyButton.Enabled = false;
@@ -3307,12 +3305,13 @@ namespace NetworkMonitorApp
             speedTestViewButton.Enabled = false;
             bool resumeMonitoring = monitoring && timer != null;
             bool sessionMarkerStarted = false;
-            string outcome = "unavailable";
-            if (resumeMonitoring) timer.Change(Timeout.Infinite, Timeout.Infinite);
+            string outcome = "not-started";
             try
             {
-                if (resumeMonitoring)
+                Func<Task<bool>> beforeStart = async delegate()
                 {
+                    if (!resumeMonitoring) return true;
+                    if (timer != null) timer.Change(Timeout.Infinite, Timeout.Infinite);
                     statusLabel.Text = Localization.Get(language, "LoadPreparing");
                     int wait = 0;
                     while (Interlocked.CompareExchange(ref sampling, 0, 0) != 0 && wait < 30000)
@@ -3320,23 +3319,17 @@ namespace NetworkMonitorApp
                         await Task.Delay(100);
                         wait += 100;
                     }
-                    if (Interlocked.CompareExchange(ref sampling, 0, 0) != 0)
-                        throw new TimeoutException();
-                    if (IsDisposed) return;
+                    if (Interlocked.CompareExchange(ref sampling, 0, 0) != 0 || IsDisposed) return false;
                     lock (samplesGate) loadLatencyMarkers.Add(new LoadLatencySessionMarker { Timestamp = DateTimeOffset.Now, Kind = "start", Outcome = "running" });
                     sessionMarkerStarted = true;
-                }
+                    return true;
+                };
 
-                using (LoadLatencyTestDialog dialog = new LoadLatencyTestDialog(language))
+                using (LoadLatencyTestDialog dialog = new LoadLatencyTestDialog(language, beforeStart))
                 {
                     dialog.ShowDialog(this);
                     if (dialog.Result != null) outcome = dialog.Result.Outcome;
                 }
-            }
-            catch (TimeoutException)
-            {
-                outcome = "not-started";
-                MessageBox.Show(this, Localization.Get(language, "LoadProbeBusy"), Localization.Get(language, "LoadTitle"), MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             catch
             {
@@ -4096,12 +4089,42 @@ namespace NetworkMonitorApp
             bool loadPrivacy = loadModule.Contains("logAimApiUrl:null") && loadModule.Contains("logMeasurementApiUrl:null") &&
                 loadModule.Contains("connect-src https://speed.cloudflare.com") && loadModule.Contains("redirect:'error'") &&
                 loadModule.Contains("measurements:[{type:'latency',numPackets:10}") &&
-                loadModule.Contains("event.data==='cancel'") && loadModule.Contains("engine.pause()") && loadModule.Contains("policy.durationSeconds*1000") &&
+                loadModule.Contains("event.data==='cancel'") && loadModule.Contains("event.data==='start'") && loadModule.Contains("send('ready')") &&
+                loadModule.Contains("engine.pause()") && loadModule.Contains("policy.durationSeconds*1000") &&
                 loadModule.Contains("bandwidthAbortRequestDuration:policy.requestAbortMs") && loadModule.Contains("engine.onError=") && loadModule.Contains("send('progress'") &&
                 LoadLatencyTestPolicy.GetConfirmation(AppLanguage.English).Contains("No account, API key, or payment") &&
                 LoadLatencyTestPolicy.GetConfirmation(AppLanguage.Romanian).Contains("Nu cere cont, cheie API sau plată") &&
                 loadModuleRo.Contains("rezultatele nu sunt păstrate de aplicație") && !loadModule.Contains("fetch('https://") &&
                 !loadModule.Contains("send('results')");
+            bool loadStartsOnlyOnExplicitStart = loadModule.Contains("if(event.data==='start'&&engine&&!done&&!started)") &&
+                loadModule.Contains("send('ready');");
+            bool loadDialogControls = false;
+            string loadDialogControlDetails = "not inspected";
+            try
+            {
+                bool startCallbackCalled = false;
+                using (LoadLatencyTestDialog dialog = new LoadLatencyTestDialog(AppLanguage.English, delegate()
+                {
+                    startCallbackCalled = true;
+                    return Task.FromResult(true);
+                }))
+                {
+                    Control[] startControls = dialog.Controls.Find("loadStartButton", true);
+                    Control[] cancelControls = dialog.Controls.Find("loadCancelButton", true);
+                    loadDialogControls = startControls.Length == 1 && cancelControls.Length == 1 && startControls[0].Enabled && cancelControls[0].Enabled &&
+                        startControls[0].Text == Localization.Get(AppLanguage.English, "LoadStartButton") &&
+                        cancelControls[0].Text == Localization.Get(AppLanguage.English, "LoadCancel") && !startCallbackCalled;
+                    loadDialogControls = loadDialogControls && !startCallbackCalled;
+                    loadDialogControlDetails = "start=" + startControls.Length + ", cancel=" + cancelControls.Length + ", callback=" + startCallbackCalled;
+                }
+            }
+            catch { loadDialogControls = false; }
+            bool loadDisclosureLocalized = LoadLatencyTestPolicy.GetDisclosure(AppLanguage.Romanian).Contains("Cloudflare") &&
+                !LoadLatencyTestPolicy.GetDisclosure(AppLanguage.Romanian).EndsWith("Continui?", StringComparison.Ordinal) &&
+                LoadLatencyTestPolicy.GetDisclosure(AppLanguage.English).Contains("your Internet plan may count the traffic");
+            bool loadPreflightSafe = loadStartsOnlyOnExplicitStart && loadDialogControls && loadDisclosureLocalized;
+            results.Add((loadPreflightSafe ? "PASS" : "FAIL") + " | loaded-latency preflight UI | " +
+                (loadPreflightSafe ? "native localized Start and Cancel controls; closing before Start sends no test traffic" : "preflight controls, start gate, or disclosure missing (gate=" + loadStartsOnlyOnExplicitStart + ", controls=" + loadDialogControls + ", details=" + loadDialogControlDetails + ", disclosure=" + loadDisclosureLocalized + ")"));
             List<LoadLatencySessionMarker> loadMarkers = new List<LoadLatencySessionMarker>
             {
                 new LoadLatencySessionMarker { Timestamp = DateTimeOffset.Parse("2026-01-02T03:04:05Z", CultureInfo.InvariantCulture), Kind = "start", Outcome = "running" },
@@ -4770,4 +4793,5 @@ namespace NetworkMonitorApp
         }
     }
 }
+
 

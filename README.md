@@ -56,7 +56,7 @@ The **Speed test** page can display Ookla, Netograf, DIGI, or Vodafone within th
 
 The report compares gateway, IPv4, IPv6, HTTPS, and DNS evidence, suggests the first likely affected segment, and labels confidence and limits. Partial endpoint response is distinct from a suspected outage; a suspected portal is not confirmed from HTTP response patterns alone. It avoids inferring an ISP or hardware fault from one check. ICMP may be filtered or rate-limited, Wi-Fi signal may be unavailable, and DNS may use the Windows cache. Firewalls, VPNs, proxies, captive portals, regional routing, IPv4/IPv6 differences, and endpoint incidents can affect results. Public targets cannot represent every game or website; use **Trace route** during the issue for a route snapshot. Game-specific diagnosis requires a known game endpoint and is not inferred from these general probes.
 
-The optional **Latency under load** action uses Cloudflare's documented Speedtest SDK and public HTTPS endpoints to compare unloaded latency with latency during download and upload. It requires no account, API key, or payment in the app. Before each run the app discloses that requests go to Cloudflare and may expose the public IP and connection metadata. A run is capped at 24 MiB payload (16 MiB download + 8 MiB upload), plus protocol/header traffic, and 60 seconds. Monitoring probes pause during the test, then resume; the report marks the excluded interval. Values appear only in the test window and are not saved to CSV/report/history or sent to AI. The SDK's results-summary upload endpoint is disabled. The test can temporarily affect other apps; cancellation stops the active request.
+The optional **Latency under load** action uses Cloudflare's documented Speedtest SDK and public HTTPS endpoints to compare unloaded latency with latency during download and upload. The app shows the disclosure, live results, and visible Start and Cancel controls in its native dark glass interface; no test traffic is sent until you select Start. It requires no account, API key, or payment in the app. Cloudflare may process the public IP and connection metadata. A run is capped at 24 MiB payload (16 MiB download + 8 MiB upload), plus protocol/header traffic, and 60 seconds. Monitoring probes pause only after you start the test, then resume; the report marks the excluded interval. Values appear only in the test window and are not saved to CSV/report/history or sent to AI. The SDK's results-summary upload endpoint is disabled. The test can temporarily affect other apps; cancellation stops the active request.
 
 ## Build and test
 
@@ -65,3 +65,4 @@ Run `build.ps1` on Windows to create `dist\NetworkMonitor.exe`, the portable ZIP
 ## License
 
 MIT. See [LICENSE](LICENSE).
+

@@ -41,6 +41,12 @@ namespace NetworkMonitorApp
                 case "LoadPreparing": return ro ? "Pregătesc testul; probele obișnuite sunt suspendate..." : "Preparing test; ordinary probes are paused...";
                 case "LoadRunning": return ro ? "Testul Cloudflare rulează. Valorile sunt temporare." : "Cloudflare test is running. Values are temporary.";
                 case "LoadCancel": return ro ? "Anulează testul" : "Cancel test";
+                case "LoadStartButton": return ro ? "Începe testul" : "Start test";
+                case "LoadDisclosureTitle": return ro ? "Înainte să începi" : "Before you start";
+                case "LoadReady": return ro ? "Nu s-a trimis trafic. Apasă «Începe testul» când ești pregătit." : "No traffic has been sent. Select Start test when you are ready.";
+                case "LoadNoData": return ro ? "Rezultatele vor apărea aici după începerea testului." : "Results will appear here after the test starts.";
+                case "LoadConnecting": return ro ? "Conectez testul Cloudflare..." : "Preparing the Cloudflare test...";
+                case "LoadStartFailed": return ro ? "Testul nu a pornit. Verifică WebView2 și încearcă din nou." : "The test did not start. Check WebView2 and try again.";
                 case "LoadClose": return ro ? "Închide" : "Close";
                 case "LoadRuntimeUnavailable": return ro ? "Testul nu a putut porni deoarece WebView2 nu este disponibil." : "The test could not start because WebView2 is unavailable.";
                 case "LoadProbeBusy": return ro ? "O probă de monitorizare încă rulează; testul de sarcină nu a pornit. Încearcă din nou." : "A monitoring probe is still running; the load test did not start. Try again.";
@@ -294,4 +300,5 @@ namespace NetworkMonitorApp
         }
     }
 }
+
 

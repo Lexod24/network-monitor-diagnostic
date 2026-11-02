@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -94,6 +95,13 @@ namespace NetworkMonitorApp
                 : "Optional Cloudflare test: measures unloaded latency, then latency during download and upload: up to 16 MiB downloaded + 8 MiB uploaded (24 MiB payload, plus protocol/header traffic), with a 60-second maximum. No account, API key, or payment in the app is required; your Internet plan may count the traffic. Requests go to Cloudflare, which may process your public IP and connection metadata; the SDK does not separately upload a results summary. Numeric measurements stay only in the test window; they are not saved to CSV/report or sent to AI. The session report may contain only the interval and test status. Ordinary monitoring is paused for this interval, and the test may temporarily affect other apps. Continue?";
         }
 
+        internal static string GetDisclosure(AppLanguage language)
+        {
+            string text = GetConfirmation(language);
+            string suffix = language == AppLanguage.Romanian ? " Continui?" : " Continue?";
+            return text.EndsWith(suffix, StringComparison.Ordinal) ? text.Substring(0, text.Length - suffix.Length) : text;
+        }
+
         internal static string OutcomeLocalizationKey(string outcome)
         {
             switch (outcome)
@@ -167,12 +175,13 @@ $('status').textContent=labels.starting;$('limits').textContent=`${Math.round(po
 const nativeFetch=window.fetch.bind(window);const budget={down:0,up:0,zero:0,bytes:0};let done=false;let engine=null;
 window.fetch=(input,init={})=>{try{const request=input instanceof Request?input:null;const url=new URL(typeof input==='string'?input:input.url,location.href);const method=(init.method||(request&&request.method)||'GET').toUpperCase();const body=init.body;let bodyBytes=0;if(typeof body==='string')bodyBytes=new TextEncoder().encode(body).length;else if(body&&typeof body.byteLength==='number')bodyBytes=body.byteLength;else if(body&&typeof body.size==='number')bodyBytes=body.size;let allowed=false;const n=Number(url.searchParams.get('bytes'));if(url.origin===policy.origin&&url.pathname==='/__down'&&method==='GET'&&Number.isSafeInteger(n)&&n>=0){if(n===0&&budget.zero<policy.maxZeroByteRequests){budget.zero++;allowed=true;}else if(n===policy.downloadBytes&&budget.down<policy.downloadCount&&bodyBytes===0&&budget.bytes+n<=policy.maxBytes){budget.down++;budget.bytes+=n;allowed=true;}}else if(url.origin===policy.origin&&url.pathname==='/__up'&&method==='POST'&&n===policy.uploadBytes&&bodyBytes===policy.uploadBytes&&budget.up<policy.uploadCount&&budget.bytes+bodyBytes<=policy.maxBytes){budget.up++;budget.bytes+=bodyBytes;allowed=true;}if(!allowed)return Promise.reject(new Error('Request blocked by the local traffic limit.'));const options=Object.assign({},init,{redirect:'error'});return nativeFetch(input,options);}catch(e){return Promise.reject(e);}};
 const send=(type,data={})=>{if(window.chrome&&window.chrome.webview)window.chrome.webview.postMessage(JSON.stringify(Object.assign({type},data)));};
-window.chrome&&window.chrome.webview&&window.chrome.webview.addEventListener('message',event=>{if(event.data==='cancel'&&engine&&!done){done=true;clearTimeout(hardTimeout);engine.pause();$('status').textContent=labels.cancelled;}});
+let hardTimeout=null;let started=false;
+window.chrome&&window.chrome.webview&&window.chrome.webview.addEventListener('message',event=>{if(event.data==='cancel'&&engine&&!done){done=true;clearTimeout(hardTimeout);engine.pause();$('status').textContent=labels.cancelled;}if(event.data==='start'&&engine&&!done&&!started){started=true;hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('status').textContent=labels.timeout;send('timeout',Object.assign(render(engine.results),{durationSeconds:policy.durationSeconds}));},policy.durationSeconds*1000);send('started');engine.play();}});
 const fmt=v=>Number.isFinite(v)?`${v.toFixed(1)} ms`:labels.noValue;
 try{engine=new SpeedTestEngine({autoStart:false,downloadApiUrl:policy.origin+'/__down',uploadApiUrl:policy.origin+'/__up',logAimApiUrl:null,logMeasurementApiUrl:null,measurements:[{type:'latency',numPackets:10},{type:'download',bytes:policy.downloadBytes,count:policy.downloadCount},{type:'upload',bytes:policy.uploadBytes,count:policy.uploadCount}],measureDownloadLoadedLatency:true,measureUploadLoadedLatency:true,loadedLatencyThrottle:200,loadedLatencyMaxPoints:20,loadedRequestMinDuration:30,bandwidthAbortRequestDuration:policy.requestAbortMs});
 const render=results=>{const unloaded=results.getUnloadedLatency();const down=results.getDownLoadedLatency();const up=results.getUpLoadedLatency();const dbps=results.getDownloadBandwidth();const ubps=results.getUploadBandwidth();$('baseline').textContent=fmt(unloaded);$('download').textContent=fmt(down);$('upload').textContent=fmt(up);$('downloadRate').textContent=`${labels.downloadRate}: ${Number.isFinite(dbps)?(dbps/1000000).toFixed(1)+' Mbps':labels.noValue}`;$('uploadRate').textContent=`${labels.uploadRate}: ${Number.isFinite(ubps)?(ubps/1000000).toFixed(1)+' Mbps':labels.noValue}`;return {unloaded,down,up,downloadMbps:Number.isFinite(dbps)?dbps/1000000:null,uploadMbps:Number.isFinite(ubps)?ubps/1000000:null,payloadBytes:budget.bytes};};
 engine.onRunningChange=running=>{if(running)$('status').textContent=labels.latencyPhase;};engine.onResultsChange=event=>{if(event&&event.type==='download')$('status').textContent=labels.downloadPhase;else if(event&&event.type==='upload')$('status').textContent=labels.uploadPhase;else $('status').textContent=labels.latencyPhase;send('progress',render(engine.results));};engine.onError=()=>{if(done)return;done=true;clearTimeout(hardTimeout);$('status').textContent=labels.failed;send('failed',render(engine.results));};engine.onFinish=results=>{if(done)return;done=true;clearTimeout(hardTimeout);$('status').textContent=labels.finished;send('finished',Object.assign(render(results),{durationSeconds:results.getTotalDurationMs()/1000}));};
-const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('status').textContent=labels.timeout;send('timeout',Object.assign(render(engine.results),{durationSeconds:policy.durationSeconds}));},policy.durationSeconds*1000);send('started');engine.play();
+send('ready');
 }catch(e){done=true;$('status').textContent=labels.failed;send('failed',{payloadBytes:budget.bytes});}
 </script></body></html>");
                 return html.ToString();
@@ -187,32 +196,94 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
         private readonly AppLanguage language;
         private readonly WebView2 webView;
         private readonly GlassButton cancelButton;
+        private readonly GlassButton startButton;
         private readonly Label statusLabel;
         private readonly System.Windows.Forms.Timer timeoutTimer;
+        private readonly System.Windows.Forms.Timer startupTimer;
+        private readonly Label unloadedValue;
+        private readonly Label downloadValue;
+        private readonly Label uploadValue;
+        private readonly Label downloadRateLabel;
+        private readonly Label uploadRateLabel;
+        private readonly Func<Task<bool>> beforeStart;
         private bool completed;
+        private bool startRequested;
+        private bool started;
         private DateTimeOffset startedAt;
         internal LoadLatencyResult Result { get; private set; }
 
-        internal LoadLatencyTestDialog(AppLanguage selectedLanguage)
+        internal LoadLatencyTestDialog(AppLanguage selectedLanguage, Func<Task<bool>> onStart)
         {
             language = selectedLanguage;
+            beforeStart = onStart;
             Text = T("LoadTitle");
             StartPosition = FormStartPosition.CenterParent;
-            Size = new Size(920, 680);
-            MinimumSize = new Size(700, 520);
+            Size = new Size(900, 690);
+            MinimumSize = new Size(740, 620);
+            FormBorderStyle = FormBorderStyle.Sizable;
             BackColor = LiquidGlassTheme.Window;
             ForeColor = LiquidGlassTheme.Text;
             Font = new Font("Segoe UI", 9F);
 
-            webView = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(9, 13, 20) };
+            // The embedded browser runs the pinned measurement SDK only. Native controls
+            // own the visible UI so a WebView rendering failure never hides the controls.
+            webView = new WebView2 { Location = new Point(-2, -2), Size = new Size(1, 1), Visible = false, DefaultBackgroundColor = Color.FromArgb(9, 13, 20) };
             Controls.Add(webView);
-            Panel footer = new Panel { Dock = DockStyle.Bottom, Height = 58, Padding = new Padding(14, 10, 14, 10), BackColor = LiquidGlassTheme.Window };
-            statusLabel = new Label { Dock = DockStyle.Fill, Text = T("LoadPreparing"), TextAlign = ContentAlignment.MiddleLeft, ForeColor = LiquidGlassTheme.SecondaryText, AutoEllipsis = true };
-            cancelButton = new GlassButton { Text = T("LoadCancel"), Size = new Size(136, 36), Dock = DockStyle.Right, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand };
+
+            Panel root = new Panel { Dock = DockStyle.Fill, Padding = new Padding(22), BackColor = LiquidGlassTheme.Window };
+            TableLayoutPanel layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, BackColor = Color.Transparent, Margin = Padding.Empty };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 62F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 164F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 146F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 78F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+
+            Panel header = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
+            Label title = new Label { Text = T("LoadHeading"), Location = new Point(2, 0), Size = new Size(800, 31), Font = new Font("Segoe UI Semibold", 17F, FontStyle.Bold), ForeColor = LiquidGlassTheme.Text, BackColor = Color.Transparent, AutoEllipsis = true };
+            Label subtitle = new Label { Text = T("LoadSubtitle"), Location = new Point(3, 34), Size = new Size(800, 22), Font = new Font("Segoe UI", 9F), ForeColor = LiquidGlassTheme.SecondaryText, BackColor = Color.Transparent, AutoEllipsis = true };
+            header.Controls.Add(title);
+            header.Controls.Add(subtitle);
+            layout.Controls.Add(header, 0, 0);
+
+            SoftSurfacePanel disclosure = new SoftSurfacePanel { Dock = DockStyle.Fill, CornerRadius = 18, Margin = new Padding(0, 4, 0, 8), Padding = new Padding(18, 14, 18, 14) };
+            Label disclosureHeading = new Label { Text = T("LoadDisclosureTitle"), Dock = DockStyle.Top, Height = 25, Font = new Font("Segoe UI Semibold", 10F, FontStyle.Bold), ForeColor = LiquidGlassTheme.Text, BackColor = Color.Transparent };
+            Label disclosureText = new Label { Text = LoadLatencyTestPolicy.GetDisclosure(language), Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8.5F), ForeColor = LiquidGlassTheme.SecondaryText, BackColor = Color.Transparent, AutoEllipsis = true, UseMnemonic = false };
+            disclosure.Controls.Add(disclosureText);
+            disclosure.Controls.Add(disclosureHeading);
+            layout.Controls.Add(disclosure, 0, 1);
+
+            TableLayoutPanel metrics = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, BackColor = Color.Transparent, Margin = new Padding(0, 0, 0, 8) };
+            for (int i = 0; i < 3; i++) metrics.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 33.333F));
+            metrics.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            unloadedValue = AddMetricCard(metrics, 0, T("LoadBaseline"));
+            downloadValue = AddMetricCard(metrics, 1, T("LoadDownload"));
+            uploadValue = AddMetricCard(metrics, 2, T("LoadUpload"));
+            layout.Controls.Add(metrics, 0, 2);
+
+            SoftSurfacePanel statusCard = new SoftSurfacePanel { Dock = DockStyle.Fill, CornerRadius = 16, Margin = new Padding(0, 0, 0, 8), Padding = new Padding(16, 10, 16, 10) };
+            statusLabel = new Label { Dock = DockStyle.Fill, Text = T("LoadReady"), TextAlign = ContentAlignment.MiddleLeft, ForeColor = LiquidGlassTheme.SecondaryText, BackColor = Color.Transparent, AutoEllipsis = true };
+            statusCard.Controls.Add(statusLabel);
+            layout.Controls.Add(statusCard, 0, 3);
+
+            Panel rates = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Margin = new Padding(2, 3, 0, 0) };
+            downloadRateLabel = new Label { Text = T("LoadDownloadRate") + ": —", Location = new Point(4, 2), Size = new Size(390, 32), ForeColor = LiquidGlassTheme.SecondaryText, BackColor = Color.Transparent, AutoEllipsis = true };
+            uploadRateLabel = new Label { Text = T("LoadUploadRate") + ": —", Location = new Point(410, 2), Size = new Size(390, 32), ForeColor = LiquidGlassTheme.SecondaryText, BackColor = Color.Transparent, AutoEllipsis = true };
+            rates.Controls.Add(downloadRateLabel);
+            rates.Controls.Add(uploadRateLabel);
+            layout.Controls.Add(rates, 0, 4);
+            root.Controls.Add(layout);
+
+            Panel footer = new Panel { Dock = DockStyle.Bottom, Height = 72, Padding = new Padding(22, 12, 22, 16), BackColor = LiquidGlassTheme.WindowRaised };
+            cancelButton = new GlassButton { Name = "loadCancelButton", Text = T("LoadCancel"), Size = new Size(150, 38), Dock = DockStyle.Right, BackColor = LiquidGlassTheme.GlassInset, ForeColor = LiquidGlassTheme.Text, Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, AccessibleName = T("LoadCancel") };
+            startButton = new GlassButton { Name = "loadStartButton", Text = T("LoadStartButton"), Size = new Size(160, 38), Dock = DockStyle.Right, Margin = new Padding(0, 0, 10, 0), BackColor = LiquidGlassTheme.Sapphire, ForeColor = Color.FromArgb(9, 15, 24), Font = new Font("Segoe UI Semibold", 9F, FontStyle.Bold), Cursor = Cursors.Hand, AccessibleName = T("LoadStartButton") };
+            startButton.Click += StartTestClicked;
             cancelButton.Click += delegate { CancelTest(); };
-            footer.Controls.Add(statusLabel);
             footer.Controls.Add(cancelButton);
+            footer.Controls.Add(startButton);
+            Controls.Add(root);
             Controls.Add(footer);
+
             timeoutTimer = new System.Windows.Forms.Timer { Interval = LoadLatencyTestPolicy.MaximumDurationSeconds * 1000 };
             timeoutTimer.Tick += delegate
             {
@@ -220,15 +291,51 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
                 try { if (webView.CoreWebView2 != null) webView.CoreWebView2.PostWebMessageAsString("cancel"); } catch { }
                 Finish("timeout", T("LoadTimeout"));
             };
-            Shown += BeginTest;
+            startupTimer = new System.Windows.Forms.Timer { Interval = 12000 };
+            startupTimer.Tick += delegate
+            {
+                startupTimer.Stop();
+                if (startRequested && !started && !completed)
+                {
+                    try { if (webView.CoreWebView2 != null) webView.CoreWebView2.Stop(); } catch { }
+                    Finish("unavailable", T("LoadStartFailed"));
+                }
+            };
             FormClosing += delegate { if (!completed) CancelTest(); };
             GlassWindowEffects.Attach(this, true);
         }
 
-        private async void BeginTest(object sender, EventArgs e)
+        private Label AddMetricCard(TableLayoutPanel metrics, int column, string caption)
         {
+            SoftSurfacePanel card = new SoftSurfacePanel { Dock = DockStyle.Fill, CornerRadius = 16, Margin = new Padding(column == 0 ? 0 : 6, 2, column == 2 ? 0 : 6, 2), Padding = new Padding(14, 12, 14, 10) };
+            Label label = new Label { Text = caption, Dock = DockStyle.Top, Height = 37, Font = new Font("Segoe UI", 8.5F), ForeColor = LiquidGlassTheme.SecondaryText, BackColor = Color.Transparent, AutoEllipsis = true };
+            Label value = new Label { Text = "—", Dock = DockStyle.Fill, Font = new Font("Segoe UI Semibold", 20F, FontStyle.Bold), ForeColor = LiquidGlassTheme.Text, BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, AccessibleName = caption };
+            card.Controls.Add(value);
+            card.Controls.Add(label);
+            metrics.Controls.Add(card, column, 0);
+            return value;
+        }
+
+        private async void StartTestClicked(object sender, EventArgs e)
+        {
+            if (startRequested || started || completed) return;
+            startRequested = true;
+            startButton.Enabled = false;
+            statusLabel.Text = T("LoadConnecting");
+            bool canStart = true;
+            try { if (beforeStart != null) canStart = await beforeStart(); }
+            catch { canStart = false; }
+            if (IsDisposed || completed) return;
+            if (!canStart)
+            {
+                startRequested = false;
+                startButton.Enabled = true;
+                statusLabel.Text = T("LoadProbeBusy");
+                return;
+            }
+
             startedAt = DateTimeOffset.Now;
-            timeoutTimer.Start();
+            startupTimer.Start();
             try
             {
                 WebView2EmbeddedRuntime.PrepareNativeLoader();
@@ -254,6 +361,8 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
                 statusLabel.Text = T("LoadRuntimeUnavailable");
                 cancelButton.Text = T("LoadClose");
                 completed = true;
+                startupTimer.Stop();
+                startButton.Enabled = false;
             }
         }
 
@@ -265,20 +374,44 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
                 IDictionary<string, object> data = new JavaScriptSerializer().DeserializeObject(message) as IDictionary<string, object>;
                 if (data == null) return;
                 string type = data.ContainsKey("type") ? Convert.ToString(data["type"], CultureInfo.InvariantCulture) : String.Empty;
+                if (type == "ready")
+                {
+                    if (!startRequested || completed) return;
+                    startupTimer.Stop();
+                    started = true;
+                    startedAt = DateTimeOffset.Now;
+                    timeoutTimer.Start();
+                    webView.CoreWebView2.PostWebMessageAsString("start");
+                    return;
+                }
                 if (type == "started") { statusLabel.Text = T("LoadRunning"); return; }
-                if (type == "progress") { Result = ParseResult("running", data); return; }
+                if (type == "progress") { Result = ParseResult("running", data); UpdateMetrics(Result); return; }
                 if (type == "failed") { Finish("failed", T("LoadFailed"), data); return; }
                 if (type == "timeout") { Finish("timeout", T("LoadTimeout"), data); return; }
                 if (type == "finished")
                 {
                     Result = ParseResult("completed", data);
-                    statusLabel.Text = T("LoadFinished");
-                    cancelButton.Text = T("LoadClose");
-                    timeoutTimer.Stop();
-                    completed = true;
+                    UpdateMetrics(Result);
+                    Finish("completed", T("LoadFinished"), data);
                 }
             }
             catch { Finish("failed", T("LoadFailed")); }
+        }
+
+        private void UpdateMetrics(LoadLatencyResult result)
+        {
+            if (result == null) return;
+            unloadedValue.Text = FormatLatency(result.UnloadedLatencyMs);
+            downloadValue.Text = FormatLatency(result.DownloadLoadedLatencyMs);
+            uploadValue.Text = FormatLatency(result.UploadLoadedLatencyMs);
+            downloadRateLabel.Text = T("LoadDownloadRate") + ": " + (result.DownloadMbps.HasValue ? result.DownloadMbps.Value.ToString("0.0", CultureInfo.CurrentCulture) + " Mbps" : "—");
+            uploadRateLabel.Text = T("LoadUploadRate") + ": " + (result.UploadMbps.HasValue ? result.UploadMbps.Value.ToString("0.0", CultureInfo.CurrentCulture) + " Mbps" : "—");
+        }
+
+        private static string FormatLatency(double? value)
+        {
+            return value.HasValue && !Double.IsNaN(value.Value) && !Double.IsInfinity(value.Value)
+                ? value.Value.ToString("0.0", CultureInfo.CurrentCulture) + " ms" : "—";
         }
 
         private void Finish(string outcome, string status, IDictionary<string, object> data = null)
@@ -286,6 +419,7 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
             if (completed) return;
             completed = true;
             timeoutTimer.Stop();
+            startupTimer.Stop();
             try { if (webView.CoreWebView2 != null) webView.CoreWebView2.Stop(); } catch { }
             Result = new LoadLatencyResult
             {
@@ -300,14 +434,22 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
             };
             statusLabel.Text = status;
             cancelButton.Text = T("LoadClose");
+            startButton.Enabled = false;
         }
 
         private void CancelTest()
         {
             if (completed) { DialogResult = DialogResult.OK; Close(); return; }
+            if (!startRequested)
+            {
+                Result = new LoadLatencyResult { Outcome = "not-started", DurationSeconds = 0 };
+                completed = true;
+                DialogResult = DialogResult.Cancel;
+                Close();
+                return;
+            }
             try { if (webView.CoreWebView2 != null) webView.CoreWebView2.PostWebMessageAsString("cancel"); } catch { }
             Finish("cancelled", T("LoadCancelled"));
-            try { if (webView.CoreWebView2 != null) webView.CoreWebView2.Stop(); } catch { }
         }
 
         protected override void Dispose(bool disposing)
@@ -316,6 +458,8 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
             {
                 timeoutTimer.Stop();
                 timeoutTimer.Dispose();
+                startupTimer.Stop();
+                startupTimer.Dispose();
                 try { webView.Dispose(); } catch { }
             }
             base.Dispose(disposing);
@@ -353,3 +497,4 @@ const hardTimeout=setTimeout(()=>{if(done)return;done=true;engine.pause();$('sta
         private string T(string key) { return Localization.Get(language, key); }
     }
 }
+
